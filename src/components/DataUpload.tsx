@@ -256,14 +256,10 @@ export const DataUpload: React.FC<DataUploadProps> = ({
                 disabled={isUploading}
               />
               <label htmlFor="csv-upload" className="block">
-                <Button
-                  as="span"
-                  disabled={isUploading}
-                  className="w-full bg-genealogy-primary hover:bg-genealogy-secondary cursor-pointer"
-                >
+                <div className="w-full bg-genealogy-primary hover:bg-genealogy-secondary text-white px-4 py-2 rounded-md flex items-center justify-center cursor-pointer disabled:opacity-50">
                   <Upload className="w-4 h-4 mr-2" />
                   {isUploading ? 'Processing...' : 'Upload CSV File'}
-                </Button>
+                </div>
               </label>
               <p className="text-sm text-muted-foreground mt-2">
                 Select a CSV file with your family data

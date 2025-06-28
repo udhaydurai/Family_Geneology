@@ -1,14 +1,14 @@
 
-import React, { useEffect, useRef, useMemo } from 'react';
-import { FamilyTreeNode as TreeNode } from '@/types/family';
-import { FamilyTreeNode } from './FamilyTreeNode';
+import React, { useMemo } from 'react';
+import { FamilyTreeNode } from '@/types/family';
+import { FamilyTreeNodeComponent } from './FamilyTreeNode';
 
 interface FamilyTreeVisualizationProps {
-  treeData: TreeNode | null;
-  onNodeClick?: (personId: string) => void;
-  onNodeEdit?: (personId: string) => void;
-  layout?: 'horizontal' | 'vertical';
-  compact?: boolean;
+  treeData: FamilyTreeNode | null;
+  onNodeClick: (personId: string) => void;
+  onNodeEdit: (personId: string) => void;
+  layout: 'horizontal' | 'vertical';
+  compact: boolean;
 }
 
 export const FamilyTreeVisualization: React.FC<FamilyTreeVisualizationProps> = ({
@@ -18,196 +18,150 @@ export const FamilyTreeVisualization: React.FC<FamilyTreeVisualizationProps> = (
   layout = 'horizontal',
   compact = false
 }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  
-  const positionedNodes = useMemo(() => {
-    if (!treeData) return [];
+  const { nodes, connections } = useMemo(() => {
+    if (!treeData) return { nodes: [], connections: [] };
+
+    const nodes: Array<FamilyTreeNode & { x: number; y: number }> = [];
+    const connections: Array<{ from: string; to: string; type: 'parent-child' | 'spouse' }> = [];
     
-    const nodes: (TreeNode & { x: number; y: number })[] = [];
-    const nodeSpacing = compact ? 160 : 200;
-    const levelSpacing = compact ? 120 : 160;
+    const nodeSpacing = compact ? 180 : 220;
+    const levelSpacing = compact ? 120 : 150;
     
-    const positionNode = (node: TreeNode, x: number, y: number, level: number) => {
+    const processNode = (
+      node: FamilyTreeNode, 
+      x: number, 
+      y: number, 
+      visited = new Set<string>()
+    ) => {
+      if (visited.has(node.person.id)) return;
+      visited.add(node.person.id);
+      
       const positionedNode = { ...node, x, y };
       nodes.push(positionedNode);
       
-      // Position children
-      if (node.children.length > 0) {
-        const childrenWidth = (node.children.length - 1) * nodeSpacing;
-        const startX = x - childrenWidth / 2;
-        
-        node.children.forEach((child, index) => {
-          const childX = startX + index * nodeSpacing;
-          const childY = layout === 'horizontal' ? y + levelSpacing : y + levelSpacing;
-          positionNode(child, childX, childY, level + 1);
+      // Process parents (above current node)
+      node.parents.forEach((parent, index) => {
+        const parentX = x + (index - (node.parents.length - 1) / 2) * nodeSpacing;
+        const parentY = y - levelSpacing;
+        processNode(parent, parentX, parentY, visited);
+        connections.push({
+          from: parent.person.id,
+          to: node.person.id,
+          type: 'parent-child'
         });
-      }
+      });
       
-      // Position parents
-      if (node.parents.length > 0) {
-        const parentsWidth = (node.parents.length - 1) * nodeSpacing;
-        const startX = x - parentsWidth / 2;
-        
-        node.parents.forEach((parent, index) => {
-          const parentX = startX + index * nodeSpacing;
-          const parentY = layout === 'horizontal' ? y - levelSpacing : y - levelSpacing;
-          positionNode(parent, parentX, parentY, level - 1);
+      // Process children (below current node)
+      node.children.forEach((child, index) => {
+        const childX = x + (index - (node.children.length - 1) / 2) * nodeSpacing;
+        const childY = y + levelSpacing;
+        processNode(child, childX, childY, visited);
+        connections.push({
+          from: node.person.id,
+          to: child.person.id,
+          type: 'parent-child'
         });
-      }
+      });
       
-      // Position spouses
-      if (node.spouses.length > 0) {
-        node.spouses.forEach((spouse, index) => {
-          const spouseX = x + (index + 1) * (nodeSpacing * 0.6);
-          const spouseY = y;
-          positionNode(spouse, spouseX, spouseY, level);
+      // Process spouses (side by side)
+      node.spouses.forEach((spouse, index) => {
+        const spouseX = x + (index + 1) * (nodeSpacing * 0.7);
+        const spouseY = y;
+        processNode(spouse, spouseX, spouseY, visited);
+        connections.push({
+          from: node.person.id,
+          to: spouse.person.id,
+          type: 'spouse'
         });
-      }
+      });
     };
     
-    if (treeData) {
-      positionNode(treeData, 0, 0, 0);
-    }
+    processNode(treeData, 0, 0);
     
-    return nodes;
-  }, [treeData, layout, compact]);
-
-  const connections = useMemo(() => {
-    const lines: Array<{ x1: number; y1: number; x2: number; y2: number; type: string }> = [];
-    
-    positionedNodes.forEach(node => {
-      // Parent-child connections
-      node.children.forEach(child => {
-        const childNode = positionedNodes.find(n => n.person.id === child.person.id);
-        if (childNode) {
-          lines.push({
-            x1: node.x,
-            y1: node.y + 50,
-            x2: childNode.x,
-            y2: childNode.y - 50,
-            type: 'parent-child'
-          });
-        }
-      });
-      
-      // Spouse connections
-      node.spouses.forEach(spouse => {
-        const spouseNode = positionedNodes.find(n => n.person.id === spouse.person.id);
-        if (spouseNode) {
-          lines.push({
-            x1: node.x + 100,
-            y1: node.y,
-            x2: spouseNode.x - 100,
-            y2: spouseNode.y,
-            type: 'spouse'
-          });
-        }
-      });
-    });
-    
-    return lines;
-  }, [positionedNodes]);
-
-  // Center the view on mount
-  useEffect(() => {
-    if (containerRef.current && positionedNodes.length > 0) {
-      const container = containerRef.current;
-      const rootNode = positionedNodes.find(n => n.isRoot);
-      if (rootNode) {
-        container.scrollLeft = (container.scrollWidth / 2) - (container.clientWidth / 2);
-        container.scrollTop = (container.scrollHeight / 2) - (container.clientHeight / 2);
-      }
-    }
-  }, [positionedNodes]);
+    return { nodes, connections };
+  }, [treeData, compact]);
 
   if (!treeData) {
     return (
-      <div className="flex items-center justify-center h-64 text-muted-foreground">
+      <div className="flex items-center justify-center h-full">
         <div className="text-center">
           <div className="text-6xl mb-4">🌳</div>
-          <h3 className="text-lg font-semibold mb-2">No Family Tree Selected</h3>
-          <p>Select a root person to view the family tree</p>
+          <h3 className="text-lg font-semibold mb-2">No Tree Data</h3>
+          <p className="text-muted-foreground">Add people and relationships to see the family tree</p>
         </div>
       </div>
     );
   }
 
-  const minX = Math.min(...positionedNodes.map(n => n.x)) - 150;
-  const maxX = Math.max(...positionedNodes.map(n => n.x)) + 150;
-  const minY = Math.min(...positionedNodes.map(n => n.y)) - 100;
-  const maxY = Math.max(...positionedNodes.map(n => n.y)) + 100;
+  const minX = Math.min(...nodes.map(n => n.x)) - 100;
+  const maxX = Math.max(...nodes.map(n => n.x)) + 100;
+  const minY = Math.min(...nodes.map(n => n.y)) - 100;
+  const maxY = Math.max(...nodes.map(n => n.y)) + 100;
   
-  const viewBoxWidth = maxX - minX;
-  const viewBoxHeight = maxY - minY;
+  const width = maxX - minX;
+  const height = maxY - minY;
 
   return (
-    <div 
-      ref={containerRef}
-      className="relative w-full h-full overflow-auto bg-gradient-to-br from-blue-50 to-purple-50"
-      style={{ minHeight: 600 }}
-    >
-      <div 
-        className="relative"
-        style={{
-          width: Math.max(viewBoxWidth, 1200),
-          height: Math.max(viewBoxHeight, 800),
-          transform: `translate(${-minX + 150}px, ${-minY + 100}px)`
-        }}
+    <div className="w-full h-full overflow-auto">
+      <svg
+        width={Math.max(width, 800)}
+        height={Math.max(height, 600)}
+        viewBox={`${minX} ${minY} ${width} ${height}`}
+        className="border border-gray-200 bg-gradient-to-br from-blue-50 to-purple-50"
       >
-        {/* SVG for connections */}
-        <svg 
-          className="absolute inset-0 pointer-events-none"
-          style={{
-            width: '100%',
-            height: '100%'
-          }}
-        >
-          {connections.map((connection, index) => (
-            <g key={index}>
-              {connection.type === 'parent-child' && (
-                <path
-                  d={`M ${connection.x1} ${connection.y1} Q ${connection.x1} ${connection.y1 + (connection.y2 - connection.y1) / 2} ${connection.x2} ${connection.y2}`}
-                  className="relationship-line"
-                  strokeDasharray={connection.type === 'spouse' ? '5,5' : ''}
-                />
-              )}
-              {connection.type === 'spouse' && (
-                <line
-                  x1={connection.x1}
-                  y1={connection.y1}
-                  x2={connection.x2}
-                  y2={connection.y2}
-                  className="relationship-line"
-                  strokeDasharray="3,3"
-                  stroke="#f59e0b"
-                />
-              )}
-            </g>
-          ))}
-        </svg>
-
-        {/* Nodes */}
-        {positionedNodes.map((node) => (
-          <div
-            key={node.person.id}
-            className="absolute tree-node-animate"
-            style={{
-              left: node.x - 100,
-              top: node.y - 75,
-              transform: 'translate3d(0,0,0)'
-            }}
+        <defs>
+          <marker
+            id="arrowhead"
+            markerWidth="10"
+            markerHeight="7"
+            refX="9"
+            refY="3.5"
+            orient="auto"
           >
-            <FamilyTreeNode
-              person={node.person}
-              isRoot={node.isRoot}
-              isHighlighted={node.isHighlighted}
-              onClick={() => onNodeClick?.(node.person.id)}
-              onEdit={() => onNodeEdit?.(node.person.id)}
-              showDetails={!compact}
+            <polygon
+              points="0 0, 10 3.5, 0 7"
+              fill="#6366f1"
             />
-          </div>
+          </marker>
+        </defs>
+        
+        {/* Render connections */}
+        {connections.map((connection, index) => {
+          const fromNode = nodes.find(n => n.person.id === connection.from);
+          const toNode = nodes.find(n => n.person.id === connection.to);
+          
+          if (!fromNode || !toNode) return null;
+          
+          const isSpouse = connection.type === 'spouse';
+          
+          return (
+            <line
+              key={index}
+              x1={fromNode.x}
+              y1={fromNode.y}
+              x2={toNode.x}
+              y2={toNode.y}
+              stroke={isSpouse ? "#8b5cf6" : "#6366f1"}
+              strokeWidth={isSpouse ? 3 : 2}
+              strokeDasharray={isSpouse ? "5,5" : "none"}
+              markerEnd={!isSpouse ? "url(#arrowhead)" : "none"}
+              opacity={0.7}
+            />
+          );
+        })}
+        
+        {/* Render nodes */}
+        {nodes.map((node) => (
+          <g key={node.person.id} transform={`translate(${node.x}, ${node.y})`}>
+            <FamilyTreeNodeComponent
+              node={node}
+              onClick={onNodeClick}
+              onEdit={onNodeEdit}
+              compact={compact}
+            />
+          </g>
         ))}
-      </div>
+      </svg>
     </div>
   );
 };
