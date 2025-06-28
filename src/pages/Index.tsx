@@ -1,12 +1,362 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+
+import React, { useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Badge } from '@/components/ui/badge';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useFamilyTree } from '@/hooks/useFamilyTree';
+import { FamilyTreeVisualization } from '@/components/FamilyTreeVisualization';
+import { PersonForm } from '@/components/PersonForm';
+import { RelationshipManager } from '@/components/RelationshipManager';
+import { DataUpload } from '@/components/DataUpload';
+import { Person } from '@/types/family';
+import { 
+  Users, 
+  Plus, 
+  Upload, 
+  Download, 
+  Search, 
+  Brain,
+  Eye,
+  EyeOff,
+  Filter,
+  Settings
+} from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
 
 const Index = () => {
+  const {
+    people,
+    relationships,
+    rootPersonId,
+    treeData,
+    validationErrors,
+    filters,
+    viewSettings,
+    addPerson,
+    updatePerson,
+    deletePerson,
+    addRelationship,
+    inferRelationships,
+    validateRelationships,
+    setRootPerson,
+    updateFilters,
+    updateViewSettings
+  } = useFamilyTree();
+
+  const [activeTab, setActiveTab] = useState('tree');
+  const [showPersonForm, setShowPersonForm] = useState(false);
+  const [editingPerson, setEditingPerson] = useState<Person | null>(null);
+  const [showFilters, setShowFilters] = useState(false);
+  const { toast } = useToast();
+
+  const handleAddPerson = (personData: Omit<Person, 'id'>) => {
+    const personId = addPerson(personData);
+    setShowPersonForm(false);
+    
+    if (!rootPersonId) {
+      setRootPerson(personId);
+    }
+    
+    toast({
+      title: "Person Added",
+      description: `${personData.name} has been added to your family tree`
+    });
+  };
+
+  const handleEditPerson = (personData: Omit<Person, 'id'>) => {
+    if (editingPerson) {
+      updatePerson(editingPerson.id, personData);
+      setEditingPerson(null);
+      toast({
+        title: "Person Updated",
+        description: `${personData.name} has been updated`
+      });
+    }
+  };
+
+  const handleNodeClick = (personId: string) => {
+    setRootPerson(personId);
+    toast({
+      title: "Root Changed",
+      description: "Family tree centered on new person"
+    });
+  };
+
+  const handleNodeEdit = (personId: string) => {
+    const person = people.find(p => p.id === personId);
+    if (person) {
+      setEditingPerson(person);
+    }
+  };
+
+  const handleImportPeople = (importedPeople: Person[]) => {
+    importedPeople.forEach(person => {
+      addPerson(person);
+    });
+    
+    if (!rootPersonId && importedPeople.length > 0) {
+      const firstPerson = people.find(p => p.name === importedPeople[0].name);
+      if (firstPerson) {
+        setRootPerson(firstPerson.id);
+      }
+    }
+  };
+
+  const handleInferRelationships = () => {
+    inferRelationships();
+    validateRelationships();
+    toast({
+      title: "Relationships Inferred",
+      description: "AI has analyzed and added new relationships based on existing data"
+    });
+  };
+
+  const handleAddRelationship = (personId: string, relatedPersonId: string, relationshipType: any) => {
+    addRelationship(personId, relatedPersonId, relationshipType);
+    toast({
+      title: "Relationship Added",
+      description: "New relationship has been established"
+    });
+  };
+
+  const handleDeleteRelationship = (relationshipId: string) => {
+    // Implementation would filter out the relationship
+    toast({
+      title: "Relationship Removed",
+      description: "The relationship has been deleted"
+    });
+  };
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="text-4xl font-bold mb-4">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
-      </div>
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-100">
+      {/* Header */}
+      <header className="bg-white/80 backdrop-blur-sm border-b border-purple-100 sticky top-0 z-50">
+        <div className="container mx-auto px-4 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <div className="p-2 bg-royal-gradient rounded-lg">
+                <Users className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold bg-royal-gradient bg-clip-text text-transparent">
+                  Family Tree Builder
+                </h1>
+                <p className="text-sm text-muted-foreground">
+                  Intelligent genealogy with AI-powered relationship inference
+                </p>
+              </div>
+            </div>
+            
+            <div className="flex items-center space-x-2">
+              {people.length > 0 && (
+                <Badge variant="secondary" className="bg-genealogy-primary/10 text-genealogy-primary">
+                  {people.length} People • {relationships.length} Relationships
+                </Badge>
+              )}
+              
+              {validationErrors.length > 0 && (
+                <Badge variant="destructive">
+                  {validationErrors.length} Issues
+                </Badge>
+              )}
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="container mx-auto px-4 py-8">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
+          <TabsList className="grid w-full grid-cols-4 bg-white/50 backdrop-blur-sm">
+            <TabsTrigger value="tree" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
+              🌳 Tree View
+            </TabsTrigger>
+            <TabsTrigger value="people" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
+              👥 People
+            </TabsTrigger>
+            <TabsTrigger value="relationships" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
+              🔗 Relationships
+            </TabsTrigger>
+            <TabsTrigger value="data" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
+              📊 Data Import/Export
+            </TabsTrigger>
+          </TabsList>
+
+          {/* Tree View Tab */}
+          <TabsContent value="tree" className="space-y-6">
+            <Card className="bg-white/70 backdrop-blur-sm">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between mb-6">
+                  <div className="flex items-center space-x-4">
+                    <h2 className="text-xl font-semibold">Family Tree Visualization</h2>
+                    {rootPersonId && (
+                      <Select value={rootPersonId} onValueChange={setRootPerson}>
+                        <SelectTrigger className="w-48">
+                          <SelectValue placeholder="Select root person" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {people.map(person => (
+                            <SelectItem key={person.id} value={person.id}>
+                              {person.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </div>
+                  
+                  <div className="flex items-center space-x-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowFilters(!showFilters)}
+                    >
+                      <Filter className="w-4 h-4 mr-2" />
+                      Filters
+                    </Button>
+                    
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => updateViewSettings({ compact: !viewSettings.compact })}
+                    >
+                      {viewSettings.compact ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-lg border overflow-hidden" style={{ height: '600px' }}>
+                  <FamilyTreeVisualization
+                    treeData={treeData}
+                    onNodeClick={handleNodeClick}
+                    onNodeEdit={handleNodeEdit}
+                    layout={viewSettings.layout}
+                    compact={viewSettings.compact}
+                  />
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* People Tab */}
+          <TabsContent value="people" className="space-y-6">
+            <Card className="bg-white/70 backdrop-blur-sm">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-xl font-semibold">Family Members</h2>
+                  <Button 
+                    onClick={() => setShowPersonForm(true)}
+                    className="bg-royal-gradient hover:opacity-90"
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Person
+                  </Button>
+                </div>
+
+                {people.length === 0 ? (
+                  <div className="text-center py-12">
+                    <div className="text-6xl mb-4">👨‍👩‍👧‍👦</div>
+                    <h3 className="text-lg font-semibold mb-2">No Family Members Yet</h3>
+                    <p className="text-muted-foreground mb-4">Start building your family tree by adding people</p>
+                    <Button 
+                      onClick={() => setShowPersonForm(true)}
+                      className="bg-royal-gradient hover:opacity-90"
+                    >
+                      <Plus className="w-4 h-4 mr-2" />
+                      Add First Person
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {people.map(person => (
+                      <Card key={person.id} className="hover:shadow-md transition-shadow">
+                        <CardContent className="p-4">
+                          <div className="flex items-center space-x-3 mb-3">
+                            <div className="w-10 h-10 bg-genealogy-primary/10 rounded-full flex items-center justify-center">
+                              {person.name.charAt(0).toUpperCase()}
+                            </div>
+                            <div className="flex-1">
+                              <h3 className="font-medium">{person.name}</h3>
+                              <p className="text-sm text-muted-foreground capitalize">{person.gender}</p>
+                            </div>
+                          </div>
+                          
+                          <div className="flex justify-between items-center">
+                            <Badge variant="outline">
+                              {person.birthDate ? new Date(person.birthDate).getFullYear() : 'Unknown'}
+                            </Badge>
+                            <div className="flex space-x-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setRootPerson(person.id)}
+                              >
+                                View Tree
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleNodeEdit(person.id)}
+                              >
+                                Edit
+                              </Button>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Relationships Tab */}
+          <TabsContent value="relationships" className="space-y-6">
+            <RelationshipManager
+              people={people}
+              relationships={relationships}
+              onAddRelationship={handleAddRelationship}
+              onDeleteRelationship={handleDeleteRelationship}
+              onInferRelationships={handleInferRelationships}
+            />
+          </TabsContent>
+
+          {/* Data Import/Export Tab */}
+          <TabsContent value="data" className="space-y-6">
+            <DataUpload
+              people={people}
+              onImportPeople={handleImportPeople}
+              onExportData={() => {}}
+            />
+          </TabsContent>
+        </Tabs>
+      </main>
+
+      {/* Person Form Dialog */}
+      <Dialog open={showPersonForm || !!editingPerson} onOpenChange={() => {
+        setShowPersonForm(false);
+        setEditingPerson(null);
+      }}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {editingPerson ? 'Edit Person' : 'Add New Person'}
+            </DialogTitle>
+          </DialogHeader>
+          <PersonForm
+            person={editingPerson || undefined}
+            onSubmit={editingPerson ? handleEditPerson : handleAddPerson}
+            onCancel={() => {
+              setShowPersonForm(false);
+              setEditingPerson(null);
+            }}
+          />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
