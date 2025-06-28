@@ -1,7 +1,6 @@
-
 import React, { useMemo } from 'react';
 import { FamilyTreeNode } from '@/types/family';
-import { FamilyTreeNodeComponent } from './FamilyTreeNode';
+import { FamilyTreeNode as FamilyTreeNodeComponent } from './FamilyTreeNode';
 
 interface FamilyTreeVisualizationProps {
   treeData: FamilyTreeNode | null;
@@ -154,10 +153,10 @@ export const FamilyTreeVisualization: React.FC<FamilyTreeVisualizationProps> = (
         {nodes.map((node) => (
           <g key={node.person.id} transform={`translate(${node.x}, ${node.y})`}>
             <FamilyTreeNodeComponent
-              node={node}
-              onClick={onNodeClick}
-              onEdit={onNodeEdit}
-              compact={compact}
+              person={node.person}
+              onClick={() => onNodeClick(node.person.id)}
+              onEdit={() => onNodeEdit(node.person.id)}
+              showDetails={!compact}
             />
           </g>
         ))}
