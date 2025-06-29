@@ -43,10 +43,10 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
 
     // Create simulation
     const simulation = d3.forceSimulation(nodes as any)
-      .force('link', d3.forceLink(links as any).id((d: any) => d.id).distance(120))
-      .force('charge', d3.forceManyBody().strength(-400))
+      .force('link', d3.forceLink(links as any).id((d: any) => d.id).distance(200))
+      .force('charge', d3.forceManyBody().strength(-600))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collide', d3.forceCollide(50));
+      .force('collide', d3.forceCollide(60));
 
     // Zoom/pan
     const g = svg.append('g').attr('class', 'network-group');
@@ -63,11 +63,12 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     const linkGroup = g.append('g');
     const link = linkGroup
       .attr('stroke', '#3b82f6') // blue-500
-      .attr('stroke-width', 2)
+      .attr('stroke-width', 1.5)
       .selectAll('path')
       .data(links)
       .enter().append('path')
-      .attr('fill', 'none');
+      .attr('fill', 'none')
+      .attr('opacity', 0.7);
 
     // Draw relationship labels as plain, small, gray text (no pill, no background, no border)
     const linkLabelGroup = linkGroup
@@ -158,7 +159,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
           // Curve control points: horizontally or vertically aligned
           const dx = tx - sx;
           const dy = ty - sy;
-          const dr = Math.sqrt(dx * dx + dy * dy) * 0.6;
+          const dr = Math.sqrt(dx * dx + dy * dy) * 0.3;
           // Use a cubic Bezier curve
           return `M${sx},${sy} C${sx},${sy + dr} ${tx},${ty - dr} ${tx},${ty}`;
         });
