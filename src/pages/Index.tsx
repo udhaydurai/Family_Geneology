@@ -183,6 +183,8 @@ const Index = () => {
                   {validationErrors.length} Issues
                 </Badge>
               )}
+              {/* Version/timestamp for build validation */}
+              <span className="text-xs text-gray-400 ml-4">Build: {new Date().toLocaleString()}</span>
             </div>
           </div>
         </div>

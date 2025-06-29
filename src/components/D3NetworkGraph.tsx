@@ -39,6 +39,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
       const key = [l.source, l.target].sort().join('-');
       return [key, l];
     })).values());
+    console.log('[D3NetworkGraph] Unique relationship labels:', uniqueLinks.length, uniqueLinks.map(l => l.type));
 
     // Create simulation
     const simulation = d3.forceSimulation(nodes as any)
@@ -78,7 +79,10 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     linkLabelGroup.append('text')
       .attr('font-size', 8)
       .attr('font-weight', 'normal')
-      .attr('fill', '#6b7280') // gray-500, ensure not blue
+      .attr('fill', '#6b7280')
+      .style('fill', '#6b7280')
+      .attr('stroke', 'none')
+      .style('paint-order', 'stroke fill markers')
       .attr('text-anchor', 'middle')
       .attr('alignment-baseline', 'middle')
       .text(d => d.type.charAt(0).toUpperCase() + d.type.slice(1));
@@ -166,9 +170,24 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
         });
       linkLabelGroup.select('text')
         .attr('y', 0)
-        .attr('fill', '#6b7280') // force gray color in case overridden
+        .attr('fill', '#6b7280')
+        .style('fill', '#6b7280')
         .attr('font-weight', 'normal')
-        .attr('font-size', 8); // force small size
+        .attr('font-size', 8)
+        .attr('stroke', 'none')
+        .style('paint-order', 'stroke fill markers');
+      // Log the style of the first label
+      const firstLabel = linkLabelGroup.select('text').nodes()[0];
+      if (firstLabel) {
+        const style = window.getComputedStyle(firstLabel);
+        console.log('[D3NetworkGraph] First label style:', {
+          fill: style.fill,
+          fontSize: style.fontSize,
+          fontWeight: style.fontWeight,
+          text: firstLabel.textContent
+        });
+      }
+      console.log('[D3NetworkGraph] Simulation tick');
       node
         .attr('transform', d => `translate(${(d as any).x},${(d as any).y})`);
     });
