@@ -1,28 +1,25 @@
-
 import React from 'react';
+import { NodeProps } from 'reactflow';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Person } from '@/types/family';
 import { Calendar, MapPin, Briefcase } from 'lucide-react';
 
-interface FamilyTreeNodeProps {
+interface FamilyTreeNodeData {
   person: Person;
   isRoot?: boolean;
   isHighlighted?: boolean;
   showDetails?: boolean;
-  onClick?: () => void;
-  onEdit?: () => void;
+  onNodeClick: () => void;
+  onNodeEdit: () => void;
 }
 
-export const FamilyTreeNode: React.FC<FamilyTreeNodeProps> = ({
-  person,
-  isRoot = false,
-  isHighlighted = false,
-  showDetails = true,
-  onClick,
-  onEdit
+export const FamilyTreeNode: React.FC<NodeProps<FamilyTreeNodeData>> = ({
+  data
 }) => {
+  const { person, isRoot = false, isHighlighted = false, showDetails = true, onNodeClick, onNodeEdit } = data;
+
   const getGenderColor = (gender: string) => {
     switch (gender) {
       case 'male': return 'bg-blue-100 border-blue-300 text-blue-800';
@@ -49,7 +46,7 @@ export const FamilyTreeNode: React.FC<FamilyTreeNodeProps> = ({
         ${person.isDeceased ? 'opacity-75 border-gray-400' : ''}
         hover:shadow-lg hover:scale-102
       `}
-      onClick={onClick}
+      onClick={onNodeClick}
     >
       {/* Deceased indicator */}
       {person.isDeceased && (
@@ -121,14 +118,14 @@ export const FamilyTreeNode: React.FC<FamilyTreeNodeProps> = ({
         )}
 
         {/* Action Buttons */}
-        {onEdit && (
+        {onNodeEdit && (
           <div className="flex justify-end pt-2 border-t">
             <Button 
               variant="ghost" 
               size="sm" 
               onClick={(e) => {
                 e.stopPropagation();
-                onEdit();
+                onNodeEdit();
               }}
               className="text-xs"
             >

@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -11,7 +10,9 @@ import { FamilyTreeVisualization } from '@/components/FamilyTreeVisualization';
 import { PersonForm } from '@/components/PersonForm';
 import { RelationshipManager } from '@/components/RelationshipManager';
 import { DataUpload } from '@/components/DataUpload';
-import { Person } from '@/types/family';
+import { Person, Relationship, RelationshipType } from '@/types/family';
+import { ValidationDisplay } from '@/components/ValidationDisplay';
+import { AdvancedRelationshipExplorer } from '@/components/AdvancedRelationshipExplorer';
 import { 
   Users, 
   Plus, 
@@ -25,8 +26,11 @@ import {
   Settings
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { D3NetworkGraph } from '@/components/D3NetworkGraph';
 
 const Index = () => {
+  console.log('Index component rendering...'); // Debug log
+  
   const {
     people,
     relationships,
@@ -43,8 +47,19 @@ const Index = () => {
     validateRelationships,
     setRootPerson,
     updateFilters,
-    updateViewSettings
+    updateViewSettings,
+    findRelationshipPath,
+    getRelationshipLabelBetween,
+    getCousins,
+    getAuntsAndUncles,
+    getNiecesAndNephews,
+    getGrandparents,
+    getGrandchildren,
+    getInLaws,
+    setPeople
   } = useFamilyTree();
+
+  console.log('useFamilyTree hook loaded, people:', people.length, 'relationships:', relationships.length); // Debug log
 
   const [activeTab, setActiveTab] = useState('tree');
   const [showPersonForm, setShowPersonForm] = useState(false);
@@ -93,16 +108,22 @@ const Index = () => {
   };
 
   const handleImportPeople = (importedPeople: Person[]) => {
-    importedPeople.forEach(person => {
-      addPerson(person);
-    });
-    
-    if (!rootPersonId && importedPeople.length > 0) {
-      const firstPerson = people.find(p => p.name === importedPeople[0].name);
-      if (firstPerson) {
-        setRootPerson(firstPerson.id);
-      }
+    if (typeof setPeople === 'function') {
+      setPeople(importedPeople);
+    } else {
+      importedPeople.forEach(person => {
+        addPerson(person);
+      });
     }
+    if (!rootPersonId && importedPeople.length > 0) {
+      setRootPerson(importedPeople[0].id);
+    }
+  };
+
+  const handleImportRelationships = (importedRelationships: Relationship[]) => {
+    importedRelationships.forEach(relationship => {
+      addRelationship(relationship.personId, relationship.relatedPersonId, relationship.relationshipType);
+    });
   };
 
   const handleInferRelationships = () => {
@@ -114,7 +135,7 @@ const Index = () => {
     });
   };
 
-  const handleAddRelationship = (personId: string, relatedPersonId: string, relationshipType: any) => {
+  const handleAddRelationship = (personId: string, relatedPersonId: string, relationshipType: RelationshipType) => {
     addRelationship(personId, relatedPersonId, relationshipType);
     toast({
       title: "Relationship Added",
@@ -191,51 +212,31 @@ const Index = () => {
               <CardContent className="p-6">
                 <div className="flex items-center justify-between mb-6">
                   <div className="flex items-center space-x-4">
-                    <h2 className="text-xl font-semibold">Family Tree Visualization</h2>
-                    {rootPersonId && (
-                      <Select value={rootPersonId} onValueChange={setRootPerson}>
-                        <SelectTrigger className="w-48">
-                          <SelectValue placeholder="Select root person" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {people.map(person => (
-                            <SelectItem key={person.id} value={person.id}>
-                              {person.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
-                  </div>
-                  
-                  <div className="flex items-center space-x-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setShowFilters(!showFilters)}
-                    >
-                      <Filter className="w-4 h-4 mr-2" />
-                      Filters
-                    </Button>
-                    
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => updateViewSettings({ compact: !viewSettings.compact })}
-                    >
-                      {viewSettings.compact ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
-                    </Button>
+                    <h2 className="text-xl font-semibold">Family Network Graph</h2>
                   </div>
                 </div>
-
-                <div className="bg-white rounded-lg border overflow-hidden" style={{ height: '600px' }}>
-                  <FamilyTreeVisualization
-                    treeData={treeData}
-                    onNodeClick={handleNodeClick}
-                    onNodeEdit={handleNodeEdit}
-                    layout={viewSettings.layout}
-                    compact={viewSettings.compact}
-                  />
+                <div className="bg-white rounded-lg border overflow-hidden" style={{ height: '700px' }}>
+                  {(() => {
+                    try {
+                      return (
+                        <D3NetworkGraph
+                          people={people}
+                          relationships={relationships}
+                        />
+                      );
+                    } catch (error) {
+                      console.error('Error rendering D3NetworkGraph:', error);
+                      return (
+                        <div className="w-full h-full flex items-center justify-center bg-red-50">
+                          <div className="text-center">
+                            <h3 className="text-lg font-semibold mb-2 text-red-600">Error Loading Family Network</h3>
+                            <p className="text-red-500 mb-2">People: {people.length}, Relationships: {relationships.length}</p>
+                            <p className="text-sm text-gray-600">Error: {error instanceof Error ? error.message : String(error)}</p>
+                          </div>
+                        </div>
+                      );
+                    }
+                  })()}
                 </div>
               </CardContent>
             </Card>
@@ -323,13 +324,52 @@ const Index = () => {
               onDeleteRelationship={handleDeleteRelationship}
               onInferRelationships={handleInferRelationships}
             />
+            
+            <AdvancedRelationshipExplorer
+              people={people}
+              findRelationshipPath={findRelationshipPath}
+              getRelationshipLabelBetween={getRelationshipLabelBetween}
+              getCousins={getCousins}
+              getAuntsAndUncles={getAuntsAndUncles}
+              getNiecesAndNephews={getNiecesAndNephews}
+              getGrandparents={getGrandparents}
+              getGrandchildren={getGrandchildren}
+              getInLaws={getInLaws}
+            />
+            
+            {/* Validation Display */}
+            {validationErrors.length > 0 && (
+              <Card className="bg-white/70 backdrop-blur-sm">
+                <CardContent className="p-6">
+                  <ValidationDisplay
+                    errors={validationErrors}
+                    onDismiss={(errorId) => {
+                      // For now, just show a toast - in a real app, you'd want to persist dismissed errors
+                      toast({
+                        title: "Error Dismissed",
+                        description: "Validation error has been dismissed"
+                      });
+                    }}
+                    onFixError={(error) => {
+                      // Handle fixing specific errors
+                      toast({
+                        title: "Fix Error",
+                        description: `Attempting to fix: ${error.message}`
+                      });
+                    }}
+                  />
+                </CardContent>
+              </Card>
+            )}
           </TabsContent>
 
           {/* Data Import/Export Tab */}
           <TabsContent value="data" className="space-y-6">
             <DataUpload
               people={people}
+              relationships={relationships}
               onImportPeople={handleImportPeople}
+              onImportRelationships={handleImportRelationships}
               onExportData={() => {}}
             />
           </TabsContent>
