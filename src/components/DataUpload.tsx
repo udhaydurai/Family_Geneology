@@ -40,17 +40,18 @@ export const DataUpload: React.FC<DataUploadProps> = ({
   const getSampleData = () => {
     const template = [
       FAMILY_COLUMNS,
-      ['Udhayakumar Durai', 'Main', '', 'male', 'Sudha Thangavelu', 'Prithiv Udhayakumar', 'Durai Submaniam', 'Kumudham Venugopal'],
-      ['Sudha Thangavelu', 'Spouse', '', 'female', 'Udhayakumar Durai', 'Prithiv Udhayakumar', 'Thangavelu Sowndappan', 'Pachainayaki Subramanian'],
-      ['Prithiv Udhayakumar', 'Son', '', 'male', '', '', 'Udhayakumar Durai', 'Sudha Thangavelu'],
-      ['Sudha Ganesh', 'Sister', '', 'female', 'Ganesh Muthuvel', 'Nandini Ganesh, Kavin Ganesh', 'Durai Submaniam', 'Kumudham Venugopal'],
-      ['Lathika Thangavelu', 'Sister in Law', '', 'female', 'Selvaraj Venkatesan', 'Vihaan Selvaraj', 'Thangavelu Sowndappan', 'Pachainayaki Subramanian'],
-      ['Kumudham Venugopal', 'Mother', '', 'female', 'Durai Submaniam', 'Udhayakumar Durai, Sudha Ganesh', 'Venugopal Gurusamy', 'Krishnaveni Venugopal'],
-      ['Durai Submaniam', 'Father', '', 'male', 'Kumudham Venugopal', 'Udhayakumar Durai, Sudha Ganesh', 'Subramniam Arasappan', 'Pappu Subramaniam'],
-      ['Thangavelu Sowndappan', 'Father in Law', '', 'male', 'Pachainayaki Subramanian', 'Sudha Thangavelu, Lathika Thangavelu', 'Sowndappan Samy', 'Venkattammal Sowndappan'],
-      ['Pachainayaki Subramanian', 'Mother in Law', '', 'female', 'Thangavelu Sowndappan', 'Sudha Thangavelu, Lathika Thangavelu', 'Subramanian Samy', 'Patti Subramanian'],
-      ['Ganesh Muthuvel', 'Brother in Law', '', 'male', 'Sudha Ganesh', 'Nandini Ganesh, Kavin Ganesh', 'Muthuvel Ramasamy', 'Leelavathy Ayyavu'],
-      ['Selvaraj Venkatesan', 'Brother in Law', '', 'male', 'Lathika Thangavelu', 'Vihaan Selvaraj', 'Venkatesan Sindan', 'Seetha Venkatesan']
+      ['Alex Johnson', 'Main', '', 'male', 'Jamie Lee', 'Taylor Johnson', 'Robert Johnson', 'Linda Smith'],
+      ['Jamie Lee', 'Spouse', '', 'female', 'Alex Johnson', 'Taylor Johnson', 'Samuel Lee', 'Patricia Lee'],
+      ['Taylor Johnson', 'Son', '', 'male', '', '', 'Alex Johnson', 'Jamie Lee'],
+      ['Morgan Smith', 'Sister', '', 'female', 'Chris Brown', 'Jordan Brown', 'Robert Johnson', 'Linda Smith'],
+      ['Chris Brown', 'Brother in Law', '', 'male', 'Morgan Smith', 'Jordan Brown', 'Michael Brown', 'Sarah Brown'],
+      ['Linda Smith', 'Mother', '', 'female', 'Robert Johnson', 'Alex Johnson, Morgan Smith', 'William Smith', 'Emma Smith'],
+      ['Robert Johnson', 'Father', '', 'male', 'Linda Smith', 'Alex Johnson, Morgan Smith', 'Edward Johnson', 'Margaret Johnson'],
+      ['Samuel Lee', 'Father in Law', '', 'male', 'Patricia Lee', 'Jamie Lee', 'George Lee', 'Helen Lee'],
+      ['Patricia Lee', 'Mother in Law', '', 'female', 'Samuel Lee', 'Jamie Lee', 'Frank Miller', 'Dorothy Miller'],
+      ['Jordan Brown', 'Nephew', '', 'male', '', '', 'Chris Brown', 'Morgan Smith'],
+      ['Michael Brown', 'Uncle', '', 'male', 'Sarah Brown', 'Chris Brown', 'Thomas Brown', 'Nancy Brown'],
+      ['Sarah Brown', 'Aunt', '', 'female', 'Michael Brown', 'Chris Brown', 'Paul White', 'Laura White']
     ];
     return template;
   };

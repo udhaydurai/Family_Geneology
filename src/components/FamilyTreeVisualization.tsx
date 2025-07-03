@@ -226,7 +226,7 @@ const FamilyTreeVisualization: React.FC<FamilyTreeVisualizationProps> = ({
             style: { stroke: '#6366f1', strokeWidth: 2 }
           }}
           className="bg-gradient-to-br from-blue-50 to-purple-50"
-        >
+      >
           <Background color="#cbd5e1" gap={20} />
           <Controls />
           <MiniMap 
