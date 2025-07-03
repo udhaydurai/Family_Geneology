@@ -13,6 +13,7 @@ import { DataUpload } from '@/components/DataUpload';
 import { Person, Relationship, RelationshipType } from '@/types/family';
 import { ValidationDisplay } from '@/components/ValidationDisplay';
 import { AdvancedRelationshipExplorer } from '@/components/AdvancedRelationshipExplorer';
+import { HighResExport } from '@/components/HighResExport';
 import { 
   Users, 
   Plus, 
@@ -43,6 +44,7 @@ const Index = () => {
     updatePerson,
     deletePerson,
     addRelationship,
+    deleteRelationship,
     inferRelationships,
     validateRelationships,
     setRootPerson,
@@ -144,7 +146,7 @@ const Index = () => {
   };
 
   const handleDeleteRelationship = (relationshipId: string) => {
-    // Implementation would filter out the relationship
+    deleteRelationship(relationshipId);
     toast({
       title: "Relationship Removed",
       description: "The relationship has been deleted"
@@ -193,7 +195,7 @@ const Index = () => {
       {/* Main Content */}
       <main className="container mx-auto px-4 py-8">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-4 bg-white/50 backdrop-blur-sm">
+          <TabsList className="grid w-full grid-cols-5 bg-white/50 backdrop-blur-sm">
             <TabsTrigger value="tree" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
               🌳 Tree View
             </TabsTrigger>
@@ -205,6 +207,9 @@ const Index = () => {
             </TabsTrigger>
             <TabsTrigger value="data" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
               📊 Data Import/Export
+            </TabsTrigger>
+            <TabsTrigger value="export" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
+              🖼️ High-Res Export
             </TabsTrigger>
           </TabsList>
 
@@ -224,6 +229,7 @@ const Index = () => {
                         <D3NetworkGraph
                           people={people}
                           relationships={relationships}
+                          onDeleteRelationship={handleDeleteRelationship}
                         />
                       );
                     } catch (error) {
@@ -373,6 +379,14 @@ const Index = () => {
               onImportPeople={handleImportPeople}
               onImportRelationships={handleImportRelationships}
               onExportData={() => {}}
+            />
+          </TabsContent>
+
+          {/* High-Resolution Export Tab */}
+          <TabsContent value="export" className="space-y-6">
+            <HighResExport
+              people={people}
+              relationships={relationships}
             />
           </TabsContent>
         </Tabs>

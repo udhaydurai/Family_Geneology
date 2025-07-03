@@ -37,7 +37,7 @@ export const DataUpload: React.FC<DataUploadProps> = ({
   const { toast } = useToast();
 
   // Download the new template
-  const downloadTemplate = () => {
+  const getSampleData = () => {
     const template = [
       FAMILY_COLUMNS,
       ['Udhayakumar Durai', 'Main', '', 'male', 'Sudha Thangavelu', 'Prithiv Udhayakumar', 'Durai Submaniam', 'Kumudham Venugopal'],
@@ -52,6 +52,11 @@ export const DataUpload: React.FC<DataUploadProps> = ({
       ['Ganesh Muthuvel', 'Brother in Law', '', 'male', 'Sudha Ganesh', 'Nandini Ganesh, Kavin Ganesh', 'Muthuvel Ramasamy', 'Leelavathy Ayyavu'],
       ['Selvaraj Venkatesan', 'Brother in Law', '', 'male', 'Lathika Thangavelu', 'Vihaan Selvaraj', 'Venkatesan Sindan', 'Seetha Venkatesan']
     ];
+    return template;
+  };
+
+  const downloadTemplate = () => {
+    const template = getSampleData();
     const csvContent = template.map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
@@ -63,6 +68,22 @@ export const DataUpload: React.FC<DataUploadProps> = ({
     toast({
       title: "Template Downloaded",
       description: "Use this template to format your family data for upload. Only one table needed!"
+    });
+  };
+
+  const loadSampleData = () => {
+    const template = getSampleData();
+    const csvContent = template.map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
+    const result = parseFamilyCSV(csvContent);
+    if (result.success.length > 0) {
+      onImportPeople(result.success);
+    }
+    if (result.relationships.length > 0) {
+      onImportRelationships(result.relationships);
+    }
+    toast({
+      title: "Sample Data Loaded",
+      description: `${result.success.length} people and ${result.relationships.length} relationships loaded for testing`
     });
   };
 
@@ -345,7 +366,7 @@ export const DataUpload: React.FC<DataUploadProps> = ({
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <Button
                 onClick={downloadTemplate}
@@ -376,6 +397,19 @@ export const DataUpload: React.FC<DataUploadProps> = ({
               </label>
               <p className="text-sm text-muted-foreground mt-2">
                 Select a CSV file with your family data (single table)
+              </p>
+            </div>
+            <div>
+              <Button
+                onClick={loadSampleData}
+                variant="outline"
+                className="w-full border-green-600 text-green-600 hover:bg-green-600 hover:text-white"
+              >
+                <CheckCircle className="w-4 h-4 mr-2" />
+                Load Sample Data
+              </Button>
+              <p className="text-sm text-muted-foreground mt-2">
+                Load sample family data for testing features
               </p>
             </div>
           </div>

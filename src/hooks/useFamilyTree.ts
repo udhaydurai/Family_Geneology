@@ -126,6 +126,13 @@ export const useFamilyTree = () => {
     });
   }, []);
 
+  const deleteRelationship = useCallback((relationshipId: string) => {
+    setState(prev => ({
+      ...prev,
+      relationships: prev.relationships.filter(rel => rel.id !== relationshipId)
+    }));
+  }, []);
+
   const inferRelationships = useCallback(() => {
     console.log('Inferring relationships...');
     setState(prev => {
@@ -596,6 +603,7 @@ export const useFamilyTree = () => {
     updatePerson,
     deletePerson,
     addRelationship,
+    deleteRelationship,
     inferRelationships,
     validateRelationships,
     setRootPerson,
