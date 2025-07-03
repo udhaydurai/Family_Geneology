@@ -226,6 +226,7 @@ const Index = () => {
                           people={people}
                           relationships={relationships}
                           onDeleteRelationship={handleDeleteRelationship}
+                          onAddRelationship={handleAddRelationship}
                         />
                       );
                     } catch (error) {
@@ -291,7 +292,7 @@ const Index = () => {
                           
                           <div className="flex justify-between items-center">
                             <Badge variant="outline">
-                              {person.birthDate ? new Date(person.birthDate).getFullYear() : 'Unknown'}
+                              {person.birthDate ? new Date(person.birthDate).getFullYear() : 'Not set'}
                             </Badge>
                             <div className="flex space-x-1">
                               <Button

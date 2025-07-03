@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
-import { Person, Relationship } from '@/types/family';
-import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Trash2, Edit, Download } from 'lucide-react';
+import { Person, Relationship, RelationshipType } from '@/types/family';
+import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Trash2, Edit, Download, Plus, Search } from 'lucide-react';
 import html2canvas from 'html2canvas';
 
 interface D3NetworkGraphProps {
@@ -11,6 +11,7 @@ interface D3NetworkGraphProps {
   height?: number;
   onDeleteRelationship?: (relationshipId: string) => void;
   onUpdateRelationship?: (relationship: Relationship) => void;
+  onAddRelationship?: (personId: string, relatedPersonId: string, relationshipType: RelationshipType) => void;
 }
 
 interface ContextMenuState {
@@ -27,7 +28,8 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
   width = 1200,
   height = 700,
   onDeleteRelationship,
-  onUpdateRelationship
+  onUpdateRelationship,
+  onAddRelationship
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -39,6 +41,12 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     y: 0
   });
   const [exporting, setExporting] = useState(false);
+  const [selectedNodes, setSelectedNodes] = useState<string[]>([]);
+  const [relationshipType, setRelationshipType] = useState<RelationshipType>('parent');
+  const [nodePositions, setNodePositions] = useState<Record<string, {x: number, y: number}>>({});
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchValue, setSearchValue] = useState('');
+  const [searchResult, setSearchResult] = useState<string | null>(null);
 
   // Close context menu when clicking outside
   useEffect(() => {
@@ -102,12 +110,22 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     })).values());
     console.log('[D3NetworkGraph] Unique relationship labels:', uniqueLinks.length, uniqueLinks.map(l => l.type));
 
+    // Use previous node positions if available
+    nodes.forEach(node => {
+      if (nodePositions[node.id]) {
+        node.x = nodePositions[node.id].x;
+        node.y = nodePositions[node.id].y;
+      }
+    });
+
     // Create simulation
     const simulation = d3.forceSimulation(nodes as any)
       .force('link', d3.forceLink(links as any).id((d: any) => d.id).distance(200))
-      .force('charge', d3.forceManyBody().strength(-600))
+      .force('charge', d3.forceManyBody().strength(-300)) // less repulsion
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collide', d3.forceCollide(60));
+      .force('collide', d3.forceCollide(60))
+      .alpha(0.2) // start with low alpha
+      .alphaDecay(0.15); // faster decay
 
     // Zoom/pan
     const g = svg.append('g').attr('class', 'network-group');
@@ -204,9 +222,21 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
           d.fy = null;
         })
       )
+      .on('click', (event, d: any) => {
+        event.stopPropagation();
+        setContextMenu(prev => ({ ...prev, visible: false }));
+        setSelectedNodes(prev => {
+          if (prev.includes(d.id)) {
+            return prev.filter(id => id !== d.id);
+          } else if (prev.length < 2) {
+            return [...prev, d.id];
+          } else {
+            return [d.id];
+          }
+        });
+      })
       .on('contextmenu', (event, d: any) => {
         event.preventDefault();
-        console.log('[D3NetworkGraph] Right-click on node:', d);
         setContextMenu({
           visible: true,
           x: event.clientX,
@@ -219,14 +249,16 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     node.append('circle')
       .attr('r', 24)
       .attr('fill', d => {
+        if (selectedNodes.includes(d.id)) return '#fde68a'; // highlight selected
+        if (searchResult === d.id) return '#fbbf24'; // highlight search
         switch (d.gender) {
           case 'male': return '#3b82f6';
           case 'female': return '#ec4899';
           default: return '#8b5cf6';
         }
       })
-      .attr('stroke', '#374151')
-      .attr('stroke-width', 2);
+      .attr('stroke', d => selectedNodes.includes(d.id) || searchResult === d.id ? '#f59e42' : '#374151')
+      .attr('stroke-width', d => selectedNodes.includes(d.id) || searchResult === d.id ? 4 : 2);
 
     // Initials
     node.append('text')
@@ -289,6 +321,12 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
       console.log('[D3NetworkGraph] Simulation tick');
       node
         .attr('transform', d => `translate(${(d as any).x},${(d as any).y})`);
+      // Save node positions
+      const newPositions: Record<string, {x: number, y: number}> = {};
+      nodes.forEach(n => {
+        newPositions[n.id] = { x: n.x ?? width/2, y: n.y ?? height/2 };
+      });
+      setNodePositions(newPositions);
     });
 
     // Improve node alignment: apply a vertical layering (tree-like) force
@@ -300,7 +338,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     return () => {
       simulation.stop();
     };
-  }, [people, relationships, width, height]);
+  }, [people, relationships, width, height, selectedNodes, searchResult]);
 
   // Fix zoom in/out to use d3.zoom().scaleBy on the SVG selection
   const handleZoom = (factor: number) => {
@@ -350,6 +388,31 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     }
   };
 
+  const handleAddRelationship = () => {
+    if (selectedNodes.length === 2 && onAddRelationship) {
+      onAddRelationship(selectedNodes[0], selectedNodes[1], relationshipType);
+      setSelectedNodes([]);
+      setRelationshipType('parent');
+    }
+  };
+
+  // Center and highlight node on search
+  const handleSearchSelect = (personId: string) => {
+    setSearchResult(personId);
+    setSearchOpen(false);
+    // Center the node
+    if (nodePositions[personId] && zoomRef.current && svgRef.current) {
+      const svg = d3.select(svgRef.current);
+      const { x, y } = nodePositions[personId];
+      const scale = 1.2;
+      svg.transition().duration(400).call(
+        zoomRef.current.transform,
+        d3.zoomIdentity.translate(width/2 - scale*x, height/2 - scale*y).scale(scale)
+      );
+    }
+    setTimeout(() => setSearchResult(null), 2000); // remove highlight after 2s
+  };
+
   return (
     <div ref={containerRef} className="relative">
       <svg
@@ -359,6 +422,87 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
         className="border border-gray-200 rounded-lg bg-white"
       />
       
+      {/* Relationship creation dropdown */}
+      {selectedNodes.length === 2 && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 bg-white border border-gray-200 rounded-lg shadow-lg px-4 py-3 flex items-center space-x-2">
+          <span className="font-medium">Create relationship between</span>
+          <span className="font-semibold text-genealogy-primary">{people.find(p => p.id === selectedNodes[0])?.name}</span>
+          <span>and</span>
+          <span className="font-semibold text-genealogy-primary">{people.find(p => p.id === selectedNodes[1])?.name}</span>
+          <select
+            className="ml-2 border rounded px-2 py-1"
+            value={relationshipType}
+            onChange={e => setRelationshipType(e.target.value as RelationshipType)}
+          >
+            <option value="parent">Parent</option>
+            <option value="child">Child</option>
+            <option value="spouse">Spouse</option>
+            <option value="sibling">Sibling</option>
+            <option value="grandparent">Grandparent</option>
+            <option value="grandchild">Grandchild</option>
+            <option value="aunt">Aunt</option>
+            <option value="uncle">Uncle</option>
+            <option value="niece">Niece</option>
+            <option value="nephew">Nephew</option>
+            <option value="cousin">Cousin</option>
+            <option value="step-parent">Step Parent</option>
+            <option value="step-child">Step Child</option>
+            <option value="adopted-parent">Adopted Parent</option>
+            <option value="adopted-child">Adopted Child</option>
+            <option value="in-law">In-law</option>
+          </select>
+          <button
+            className="ml-2 px-3 py-1 bg-genealogy-primary text-white rounded hover:bg-genealogy-secondary flex items-center"
+            onClick={handleAddRelationship}
+          >
+            <Plus className="w-4 h-4 mr-1" />Add
+          </button>
+          <button
+            className="ml-2 px-2 py-1 text-gray-500 hover:text-gray-700"
+            onClick={() => setSelectedNodes([])}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {/* Search icon and dropdown */}
+      <div className="absolute top-4 right-24 z-30">
+        <button
+          className="p-2 bg-white rounded-lg shadow-md hover:bg-gray-50 border border-gray-200"
+          title="Search Node"
+          onClick={() => setSearchOpen(v => !v)}
+        >
+          <Search className="w-4 h-4" />
+        </button>
+        {searchOpen && (
+          <div className="absolute right-0 mt-2 bg-white border border-gray-200 rounded-lg shadow-lg p-2 w-64">
+            <input
+              type="text"
+              className="w-full border rounded px-2 py-1 mb-2"
+              placeholder="Search person by name..."
+              value={searchValue}
+              onChange={e => setSearchValue(e.target.value)}
+              autoFocus
+            />
+            <div className="max-h-40 overflow-y-auto">
+              {people.filter(p => p.name.toLowerCase().includes(searchValue.toLowerCase())).map(p => (
+                <div
+                  key={p.id}
+                  className="px-2 py-1 hover:bg-genealogy-primary/10 cursor-pointer rounded"
+                  onClick={() => handleSearchSelect(p.id)}
+                >
+                  {p.name}
+                </div>
+              ))}
+              {people.filter(p => p.name.toLowerCase().includes(searchValue.toLowerCase())).length === 0 && (
+                <div className="text-gray-400 px-2 py-1">No results</div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Zoom Controls + Export */}
       <div className="absolute top-4 right-4 flex flex-col space-y-2 z-20">
         <button
