@@ -13,7 +13,6 @@ import { DataUpload } from '@/components/DataUpload';
 import { Person, Relationship, RelationshipType } from '@/types/family';
 import { ValidationDisplay } from '@/components/ValidationDisplay';
 import { AdvancedRelationshipExplorer } from '@/components/AdvancedRelationshipExplorer';
-import { HighResExport } from '@/components/HighResExport';
 import { 
   Users, 
   Plus, 
@@ -208,9 +207,6 @@ const Index = () => {
             <TabsTrigger value="data" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
               📊 Data Import/Export
             </TabsTrigger>
-            <TabsTrigger value="export" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
-              🖼️ High-Res Export
-            </TabsTrigger>
           </TabsList>
 
           {/* Tree View Tab */}
@@ -379,14 +375,6 @@ const Index = () => {
               onImportPeople={handleImportPeople}
               onImportRelationships={handleImportRelationships}
               onExportData={() => {}}
-            />
-          </TabsContent>
-
-          {/* High-Resolution Export Tab */}
-          <TabsContent value="export" className="space-y-6">
-            <HighResExport
-              people={people}
-              relationships={relationships}
             />
           </TabsContent>
         </Tabs>
