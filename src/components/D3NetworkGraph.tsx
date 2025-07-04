@@ -47,6 +47,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchValue, setSearchValue] = useState('');
   const [searchResult, setSearchResult] = useState<string | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
   // Close context menu when clicking outside
   useEffect(() => {
@@ -249,27 +250,31 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
           d.fy = null;
         })
       )
-      .on('click', (event, d: any) => {
-        event.stopPropagation();
-        setContextMenu(prev => ({ ...prev, visible: false }));
-        setSelectedNodes(prev => {
-          if (prev.includes(d.id)) {
-            return prev.filter(id => id !== d.id);
-          } else if (prev.length < 2) {
-            return [...prev, d.id];
-          } else {
-            return [d.id];
-          }
-        });
+      .on('mouseover', (event, d: any) => {
+        // Subtle highlight: only direct neighbors
+        const neighbors = new Set([
+          d.id,
+          ...links.filter(l => l.source === d.id).map(l => l.target),
+          ...links.filter(l => l.target === d.id).map(l => l.source)
+        ]);
+        node.select('circle').attr('stroke', n => neighbors.has(n.id) ? '#fbbf24' : '#bbb').attr('stroke-width', n => neighbors.has(n.id) ? 3 : 1.5);
+        link.attr('stroke', l => l.source.id === d.id || l.target.id === d.id ? '#fbbf24' : '#3b82f6').attr('stroke-width', l => l.source.id === d.id || l.target.id === d.id ? 2.5 : 1.2);
       })
-      .on('contextmenu', (event, d: any) => {
-        event.preventDefault();
-        setContextMenu({
-          visible: true,
-          x: event.clientX,
-          y: event.clientY,
-          person: d
-        });
+      .on('mouseout', () => {
+        // Remove highlight unless selected
+        node.select('circle').attr('stroke', n => selectedNodeId === n.id ? '#fbbf24' : '#bbb').attr('stroke-width', n => selectedNodeId === n.id ? 3 : 1.5);
+        link.attr('stroke', l => selectedNodeId && (l.source.id === selectedNodeId || l.target.id === selectedNodeId) ? '#fbbf24' : '#3b82f6').attr('stroke-width', l => selectedNodeId && (l.source.id === selectedNodeId || l.target.id === selectedNodeId) ? 2.5 : 1.2);
+      })
+      .on('click', (event, d: any) => {
+        setSelectedNodeId(selectedNodeId === d.id ? null : d.id);
+        // Subtle highlight for selection
+        const neighbors = new Set([
+          d.id,
+          ...links.filter(l => l.source === d.id).map(l => l.target),
+          ...links.filter(l => l.target === d.id).map(l => l.source)
+        ]);
+        node.select('circle').attr('stroke', n => neighbors.has(n.id) ? '#fbbf24' : '#bbb').attr('stroke-width', n => neighbors.has(n.id) ? 3 : 1.5);
+        link.attr('stroke', l => l.source.id === d.id || l.target.id === d.id ? '#fbbf24' : '#3b82f6').attr('stroke-width', l => l.source.id === d.id || l.target.id === d.id ? 2.5 : 1.2);
       });
 
     // Node circles
@@ -362,7 +367,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     return () => {
       simulation.stop();
     };
-  }, [people, relationships, width, height, selectedNodes, searchResult]);
+  }, [people, relationships, width, height, selectedNodes, searchResult, selectedNodeId]);
 
   // Fix zoom in/out to use d3.zoom().scaleBy on the SVG selection
   const handleZoom = (factor: number) => {
