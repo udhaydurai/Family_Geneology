@@ -89,6 +89,32 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     }
   };
 
+  // Assign generations to each person
+  function assignGenerations(people, relationships) {
+    const generations = {};
+    const queue = [];
+    // Find roots (no parent relationships)
+    const childIds = new Set(relationships.filter(r => r.relationshipType === 'child').map(r => r.personId));
+    const rootIds = people.map(p => p.id).filter(id => !childIds.has(id));
+    rootIds.forEach(rootId => {
+      generations[rootId] = 0;
+      queue.push(rootId);
+    });
+    while (queue.length > 0) {
+      const currentId = queue.shift();
+      const currentGen = generations[currentId];
+      relationships
+        .filter(r => r.relationshipType === 'parent' && r.personId === currentId)
+        .forEach(r => {
+          if (!(r.relatedPersonId in generations) || generations[r.relatedPersonId] > currentGen + 1) {
+            generations[r.relatedPersonId] = currentGen + 1;
+            queue.push(r.relatedPersonId);
+          }
+        });
+    }
+    return generations;
+  }
+
   // Only re-run D3 rendering when data or size changes
   useEffect(() => {
     if (!svgRef.current) return;
@@ -119,13 +145,14 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     });
 
     // Create simulation
+    const generations = assignGenerations(people, relationships);
     const simulation = d3.forceSimulation(nodes as any)
-      .force('link', d3.forceLink(links as any).id((d: any) => d.id).distance(200))
-      .force('charge', d3.forceManyBody().strength(-300)) // less repulsion
+      .force('link', d3.forceLink(links as any).id((d: any) => d.id).distance(300))
+      .force('charge', d3.forceManyBody().strength(-800))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collide', d3.forceCollide(60))
-      .alpha(0.2) // start with low alpha
-      .alphaDecay(0.15); // faster decay
+      .force('collide', d3.forceCollide(90))
+      .alpha(0.3)
+      .alphaDecay(0.12);
 
     // Zoom/pan
     const g = svg.append('g').attr('class', 'network-group');
@@ -330,10 +357,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     });
 
     // Improve node alignment: apply a vertical layering (tree-like) force
-    simulation.force('y', d3.forceY((d: any) => {
-      // Layer by generation if possible, else center
-      return height / 2 + ((d.generation || 0) * 100);
-    }).strength(0.2));
+    simulation.force('y', d3.forceY((d: any) => (generations[d.id] ?? 0) * 180 + 100).strength(1));
 
     return () => {
       simulation.stop();
