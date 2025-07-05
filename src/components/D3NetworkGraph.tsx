@@ -124,18 +124,38 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
 
     // Prepare data
     const nodes = people.map(person => ({ ...person, id: person.id }));
-    const links = relationships.map(rel => ({
-      source: rel.personId,
-      target: rel.relatedPersonId,
-      type: rel.relationshipType
-    }));
-
-    // Deduplicate links for label display (show only one label per edge, order-independent)
-    const uniqueLinks = Array.from(new Map(links.map(l => {
-      const key = [l.source, l.target].sort().join('-');
-      return [key, l];
-    })).values());
-    console.log('[D3NetworkGraph] Unique relationship labels:', uniqueLinks.length, uniqueLinks.map(l => l.type));
+    // Definitive deduplication for parent-child links (always parent→child direction if possible)
+    const parentChildPairs = new Set();
+    const dedupedParentLinks = [];
+    relationships.forEach(rel => {
+      if (rel.relationshipType === 'parent' || rel.relationshipType === 'child') {
+        const key = [rel.personId, rel.relatedPersonId].sort().join('-');
+        if (!parentChildPairs.has(key)) {
+          parentChildPairs.add(key);
+          if (rel.relationshipType === 'parent') {
+            dedupedParentLinks.push({
+              source: rel.personId,
+              target: rel.relatedPersonId,
+              type: 'Parent/Child'
+            });
+          } else {
+            dedupedParentLinks.push({
+              source: rel.relatedPersonId,
+              target: rel.personId,
+              type: 'Parent/Child'
+            });
+          }
+        }
+      }
+    });
+    const otherLinks = relationships
+      .filter(r => r.relationshipType !== 'parent' && r.relationshipType !== 'child')
+      .map(rel => ({
+        source: rel.personId,
+        target: rel.relatedPersonId,
+        type: rel.relationshipType
+      }));
+    const links = [...dedupedParentLinks, ...otherLinks];
 
     // Use previous node positions if available
     nodes.forEach(node => {
@@ -169,7 +189,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     // Draw links as blue, curvy lines (SVG paths)
     const linkGroup = g.append('g');
     const link = linkGroup
-      .attr('stroke', '#3b82f6') // blue-500
+      .attr('stroke', '#3b82f6')
       .attr('stroke-width', 1.5)
       .selectAll('path')
       .data(links)
@@ -202,13 +222,12 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
         }
       });
 
-    // Draw relationship labels as plain, small, gray text (no pill, no background, no border)
+    // Draw relationship labels as 'Parent/Child' for parent links
     const linkLabelGroup = linkGroup
       .selectAll('g.link-label')
-      .data(uniqueLinks)
+      .data(links)
       .enter().append('g')
       .attr('class', 'link-label');
-
     linkLabelGroup.append('text')
       .attr('font-size', 8)
       .attr('font-weight', 'normal')
@@ -218,7 +237,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
       .style('paint-order', 'stroke fill markers')
       .attr('text-anchor', 'middle')
       .attr('alignment-baseline', 'middle')
-      .text(d => d.type.charAt(0).toUpperCase() + d.type.slice(1));
+      .text(d => d.type === 'Parent/Child' ? 'Parent/Child' : d.type.charAt(0).toUpperCase() + d.type.slice(1));
 
     // Add SVG filter for shadow
     svg.insert('defs', ':first-child').html(`
@@ -246,8 +265,8 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
         })
         .on('end', (event, d: any) => {
           if (!event.active) simulation.alphaTarget(0);
-          d.fx = null;
-          d.fy = null;
+          d.fx = event.x;
+          d.fy = event.y;
         })
       )
       .on('mouseover', (event, d: any) => {
@@ -267,7 +286,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
       })
       .on('click', (event, d: any) => {
         setSelectedNodeId(selectedNodeId === d.id ? null : d.id);
-        // Subtle highlight for selection
+        // Only highlight, do not touch d.fx/d.fy or simulation
         const neighbors = new Set([
           d.id,
           ...links.filter(l => l.source === d.id).map(l => l.target),
@@ -277,20 +296,24 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
         link.attr('stroke', l => l.source.id === d.id || l.target.id === d.id ? '#fbbf24' : '#3b82f6').attr('stroke-width', l => l.source.id === d.id || l.target.id === d.id ? 2.5 : 1.2);
       });
 
-    // Node circles
+    // Draw nodes with larger invisible interaction radius
     node.append('circle')
-      .attr('r', 24)
+      .attr('r', 28) // invisible hit area
+      .attr('fill', 'transparent')
+      .attr('pointer-events', 'all');
+    node.append('circle')
+      .attr('r', 20)
       .attr('fill', d => {
-        if (selectedNodes.includes(d.id)) return '#fde68a'; // highlight selected
-        if (searchResult === d.id) return '#fbbf24'; // highlight search
+        if (selectedNodes.includes(d.id)) return '#fde68a';
+        if (searchResult === d.id) return '#fbbf24';
         switch (d.gender) {
           case 'male': return '#3b82f6';
           case 'female': return '#ec4899';
           default: return '#8b5cf6';
         }
       })
-      .attr('stroke', d => selectedNodes.includes(d.id) || searchResult === d.id ? '#f59e42' : '#374151')
-      .attr('stroke-width', d => selectedNodes.includes(d.id) || searchResult === d.id ? 4 : 2);
+      .attr('stroke', d => selectedNodeId === d.id ? '#fbbf24' : '#bbb')
+      .attr('stroke-width', d => selectedNodeId === d.id ? 3 : 1.5);
 
     // Initials
     node.append('text')
@@ -425,6 +448,8 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     }
   };
 
+
+
   // Center and highlight node on search
   const handleSearchSelect = (personId: string) => {
     setSearchResult(personId);
@@ -496,7 +521,17 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
       )}
 
       {/* Search icon and dropdown */}
-      <div className="absolute top-4 right-24 z-30">
+      <div className="absolute top-4 right-24 z-30 flex space-x-2">
+        <button
+          className="p-2 bg-white rounded-lg shadow-md hover:bg-gray-50 border border-gray-200"
+          title="Add Relationship"
+          onClick={() => {
+            // Show instructions for adding relationships
+            alert('Select two people by clicking on them to create a relationship between them.');
+          }}
+        >
+          <Plus className="w-4 h-4" />
+        </button>
         <button
           className="p-2 bg-white rounded-lg shadow-md hover:bg-gray-50 border border-gray-200"
           title="Search Node"
@@ -571,6 +606,8 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
           <Download className="w-4 h-4" />
         </button>
       </div>
+
+
 
       {/* Context Menu */}
       {contextMenu.visible && (
