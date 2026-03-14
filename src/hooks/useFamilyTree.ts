@@ -134,7 +134,7 @@ export const useFamilyTree = () => {
   }, []);
 
   const inferRelationships = useCallback(() => {
-    console.log('Inferring relationships...');
+    // Infer relationships from existing parent/child/spouse data
     setState(prev => {
       const newRelationships = [...prev.relationships];
       const people = prev.people;
@@ -456,29 +456,14 @@ export const useFamilyTree = () => {
   }, []);
 
   const treeData = useMemo(() => {
-    console.log('Generating tree data:', {
-      hasRootPerson: !!state.rootPersonId,
-      rootPersonId: state.rootPersonId,
-      peopleCount: state.people.length,
-      relationshipsCount: state.relationships.length
-    });
-    
-    if (!state.rootPersonId) {
-      console.log('No root person set, returning null');
-      return null;
-    }
-    
+    if (!state.rootPersonId) return null;
+
     const buildTreeNode = (personId: string, generation = 0, visited = new Set<string>()): FamilyTreeNode | null => {
       if (visited.has(personId)) return null;
       visited.add(personId);
-      
-      const person = state.people.find(p => p.id === personId);
-      if (!person) {
-        console.log('Person not found:', personId);
-        return null;
-      }
 
-      console.log('Building tree node for:', person.name, 'generation:', generation);
+      const person = state.people.find(p => p.id === personId);
+      if (!person) return null;
 
       const parents = state.relationships
         .filter(rel => rel.relatedPersonId === personId && rel.relationshipType === 'parent')
@@ -495,36 +480,16 @@ export const useFamilyTree = () => {
         .map(rel => buildTreeNode(rel.relatedPersonId, generation, new Set(visited)))
         .filter(Boolean) as FamilyTreeNode[];
 
-      const treeNode = {
-        person,
-        x: 0,
-        y: 0,
-        generation,
+      return {
+        person, x: 0, y: 0, generation,
         side: (generation === 0 ? 'direct' : (generation < 0 ? 'paternal' : 'maternal')) as 'maternal' | 'paternal' | 'direct',
-        children,
-        parents,
-        spouses,
+        children, parents, spouses,
         isRoot: personId === state.rootPersonId,
         isHighlighted: false
       };
-
-      console.log('Created tree node:', {
-        name: person.name,
-        parentsCount: parents.length,
-        childrenCount: children.length,
-        spousesCount: spouses.length,
-        isRoot: treeNode.isRoot
-      });
-
-      return treeNode;
     };
 
-    const result = buildTreeNode(state.rootPersonId);
-    console.log('Tree data generation complete:', {
-      hasResult: !!result,
-      rootPersonName: result?.person?.name
-    });
-    return result;
+    return buildTreeNode(state.rootPersonId);
   }, [state.rootPersonId, state.people, state.relationships]);
 
   // Graph-based relationship functions
@@ -596,6 +561,22 @@ export const useFamilyTree = () => {
     }));
   }, []);
 
+  const setRelationships = useCallback((relationships: Relationship[]) => {
+    setState(prev => ({
+      ...prev,
+      relationships
+    }));
+  }, []);
+
+  const loadData = useCallback((people: Person[], relationships: Relationship[]) => {
+    setState(prev => ({
+      ...prev,
+      people,
+      relationships,
+      rootPersonId: people.length > 0 ? people[0].id : null,
+    }));
+  }, []);
+
   return {
     ...state,
     treeData,
@@ -609,7 +590,6 @@ export const useFamilyTree = () => {
     setRootPerson,
     updateFilters,
     updateViewSettings,
-    // Graph-based relationship functions
     findRelationshipPath,
     getRelationshipLabelBetween,
     getAllRelativesOf,
@@ -619,7 +599,9 @@ export const useFamilyTree = () => {
     getGrandparents,
     getGrandchildren,
     getInLaws,
-    setPeople
+    setPeople,
+    setRelationships,
+    loadData,
   };
 };
 

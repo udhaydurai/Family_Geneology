@@ -1,8 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as d3 from 'd3';
 import { Person, Relationship, RelationshipType } from '@/types/family';
-import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Trash2, Edit, Download, Plus, Search } from 'lucide-react';
-import html2canvas from 'html2canvas';
+import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Download, Search, X, Printer, FileDown } from 'lucide-react';
 
 interface D3NetworkGraphProps {
   people: Person[];
@@ -19,7 +18,135 @@ interface ContextMenuState {
   x: number;
   y: number;
   relationship?: Relationship;
-  person?: Person;
+}
+
+interface SelectedPersonInfo {
+  person: Person;
+  relationships: Array<{ type: string; name: string; personId: string }>;
+}
+
+// ── Relationship categories for filtering ──
+type RelCategory = 'parent_child' | 'spouse' | 'sibling' | 'grandparent' | 'aunt_uncle' | 'cousin' | 'in_law';
+
+const REL_CATEGORIES: { key: RelCategory; label: string; types: string[]; color: string; dash: string }[] = [
+  { key: 'parent_child', label: 'Parent / Child', types: ['Parent/Child', 'parent', 'child'], color: '#6366f1', dash: '' },
+  { key: 'spouse', label: 'Spouse', types: ['spouse'], color: '#e11d48', dash: '8,4' },
+  { key: 'sibling', label: 'Sibling', types: ['sibling'], color: '#10b981', dash: '5,5' },
+  { key: 'grandparent', label: 'Grandparent', types: ['grandparent', 'grandchild'], color: '#7c3aed', dash: '12,4' },
+  { key: 'aunt_uncle', label: 'Aunt / Uncle', types: ['aunt', 'uncle', 'niece', 'nephew'], color: '#f97316', dash: '3,3' },
+  { key: 'cousin', label: 'Cousin', types: ['cousin'], color: '#06b6d4', dash: '6,3,2,3' },
+  { key: 'in_law', label: 'In-law', types: ['in-law'], color: '#a3a3a3', dash: '2,4' },
+];
+
+const NODE_COLORS = {
+  male: '#3b82f6',
+  female: '#ec4899',
+  other: '#8b5cf6',
+  deceased: '#9ca3af',
+};
+
+const getCategoryForType = (type: string) => REL_CATEGORIES.find(c => c.types.includes(type));
+
+// ── Generation assignment via BFS from roots ──
+function assignGenerations(people: Person[], relationships: Relationship[]): Record<string, number> {
+  const generations: Record<string, number> = {};
+  const parentOf = new Map<string, string[]>();
+  const childOf = new Map<string, string[]>();
+
+  relationships.forEach(r => {
+    if (r.relationshipType === 'parent') {
+      if (!childOf.has(r.personId)) childOf.set(r.personId, []);
+      childOf.get(r.personId)!.push(r.relatedPersonId);
+      if (!parentOf.has(r.relatedPersonId)) parentOf.set(r.relatedPersonId, []);
+      parentOf.get(r.relatedPersonId)!.push(r.personId);
+    } else if (r.relationshipType === 'child') {
+      if (!childOf.has(r.relatedPersonId)) childOf.set(r.relatedPersonId, []);
+      childOf.get(r.relatedPersonId)!.push(r.personId);
+      if (!parentOf.has(r.personId)) parentOf.set(r.personId, []);
+      parentOf.get(r.personId)!.push(r.relatedPersonId);
+    }
+  });
+
+  const roots = people.filter(p => !parentOf.has(p.id) || parentOf.get(p.id)!.length === 0);
+  const queue: { id: string; gen: number }[] = roots.map(r => ({ id: r.id, gen: 0 }));
+  const visited = new Set<string>();
+
+  while (queue.length > 0) {
+    const { id, gen } = queue.shift()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    generations[id] = gen;
+
+    relationships.forEach(r => {
+      if (r.relationshipType === 'spouse') {
+        const spouseId = r.personId === id ? r.relatedPersonId : (r.relatedPersonId === id ? r.personId : null);
+        if (spouseId && !visited.has(spouseId)) queue.unshift({ id: spouseId, gen });
+      }
+    });
+
+    (childOf.get(id) ?? []).forEach(childId => {
+      if (!visited.has(childId)) queue.push({ id: childId, gen: gen + 1 });
+    });
+  }
+
+  people.forEach(p => { if (!(p.id in generations)) generations[p.id] = 0; });
+  return generations;
+}
+
+// ── Deduplicate links ──
+interface GraphLink {
+  source: string;
+  target: string;
+  type: string;
+  relId: string;
+  category: RelCategory;
+}
+
+function buildLinks(relationships: Relationship[]): GraphLink[] {
+  const seen = new Set<string>();
+  const links: GraphLink[] = [];
+
+  relationships.forEach(rel => {
+    if (rel.relationshipType === 'parent' || rel.relationshipType === 'child') {
+      const parentId = rel.relationshipType === 'parent' ? rel.personId : rel.relatedPersonId;
+      const childId = rel.relationshipType === 'parent' ? rel.relatedPersonId : rel.personId;
+      const key = `pc:${[parentId, childId].sort().join('-')}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        links.push({ source: parentId, target: childId, type: 'Parent/Child', relId: rel.id, category: 'parent_child' });
+      }
+    } else {
+      const key = `${rel.relationshipType}:${[rel.personId, rel.relatedPersonId].sort().join('-')}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        const cat = getCategoryForType(rel.relationshipType);
+        links.push({
+          source: rel.personId, target: rel.relatedPersonId,
+          type: rel.relationshipType, relId: rel.id,
+          category: cat?.key ?? 'in_law',
+        });
+      }
+    }
+  });
+
+  return links;
+}
+
+// ── Spouse pair detection for horizontal layout ──
+function getSpousePairs(relationships: Relationship[]): Map<string, string> {
+  const pairs = new Map<string, string>();
+  const seen = new Set<string>();
+  relationships.forEach(r => {
+    if (r.relationshipType === 'spouse') {
+      const key = [r.personId, r.relatedPersonId].sort().join('-');
+      if (!seen.has(key)) {
+        seen.add(key);
+        pairs.set(r.personId, r.relatedPersonId);
+        pairs.set(r.relatedPersonId, r.personId);
+      }
+    }
+  });
+  return pairs;
 }
 
 export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
@@ -28,408 +155,539 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
   width = 1200,
   height = 700,
   onDeleteRelationship,
-  onUpdateRelationship,
   onAddRelationship
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown>>();
-  const gRef = useRef<SVGGElement>(null);
-  const [contextMenu, setContextMenu] = useState<ContextMenuState>({
-    visible: false,
-    x: 0,
-    y: 0
-  });
+  const gRef = useRef<SVGGElement | null>(null);
+  const simulationRef = useRef<d3.Simulation<any, any> | null>(null);
+
+  const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0 });
   const [exporting, setExporting] = useState(false);
-  const [selectedNodes, setSelectedNodes] = useState<string[]>([]);
-  const [relationshipType, setRelationshipType] = useState<RelationshipType>('parent');
-  const [nodePositions, setNodePositions] = useState<Record<string, {x: number, y: number}>>({});
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchValue, setSearchValue] = useState('');
-  const [searchResult, setSearchResult] = useState<string | null>(null);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedPerson, setSelectedPerson] = useState<SelectedPersonInfo | null>(null);
+  const [visibleCategories, setVisibleCategories] = useState<Set<RelCategory>>(
+    new Set(['parent_child', 'spouse', 'sibling'])
+  );
+  const [showExportMenu, setShowExportMenu] = useState(false);
 
-  // Close context menu when clicking outside
+  // Close menus on outside click
   useEffect(() => {
-    const handleClickOutside = () => {
+    const handler = (e: MouseEvent) => {
       setContextMenu(prev => ({ ...prev, visible: false }));
     };
-    
-    document.addEventListener('click', handleClickOutside);
-    return () => document.removeEventListener('click', handleClickOutside);
+    document.addEventListener('click', handler);
+    return () => document.removeEventListener('click', handler);
   }, []);
 
-  // Export as PNG
-  const handleExportPNG = async () => {
-    setExporting(true);
-    try {
-      if (!containerRef.current) return;
-      // Use html2canvas to capture the SVG (with zoom/pan)
-      const svgElem = svgRef.current;
-      if (!svgElem) return;
-      // Clone the SVG node to avoid UI overlays
-      const clone = svgElem.cloneNode(true) as SVGSVGElement;
-      // Wrap in a div for html2canvas
-      const wrapper = document.createElement('div');
-      wrapper.appendChild(clone);
-      wrapper.style.background = 'white';
-      document.body.appendChild(wrapper);
-      const canvas = await html2canvas(wrapper, {
-        backgroundColor: '#fff',
-        useCORS: true,
-        logging: false,
-        scale: 2
-      });
-      document.body.removeChild(wrapper);
-      const link = document.createElement('a');
-      link.download = `family_tree_${new Date().toISOString().split('T')[0]}.png`;
-      link.href = canvas.toDataURL('image/png');
-      link.click();
-    } finally {
-      setExporting(false);
-    }
-  };
-
-  // Assign generations to each person
-  function assignGenerations(people, relationships) {
-    const generations = {};
-    const queue = [];
-    // Find roots (no parent relationships)
-    const childIds = new Set(relationships.filter(r => r.relationshipType === 'child').map(r => r.personId));
-    const rootIds = people.map(p => p.id).filter(id => !childIds.has(id));
-    rootIds.forEach(rootId => {
-      generations[rootId] = 0;
-      queue.push(rootId);
+  const toggleCategory = useCallback((cat: RelCategory) => {
+    setVisibleCategories(prev => {
+      const next = new Set(prev);
+      if (next.has(cat)) next.delete(cat);
+      else next.add(cat);
+      return next;
     });
-    while (queue.length > 0) {
-      const currentId = queue.shift();
-      const currentGen = generations[currentId];
-      relationships
-        .filter(r => r.relationshipType === 'parent' && r.personId === currentId)
-        .forEach(r => {
-          if (!(r.relatedPersonId in generations) || generations[r.relatedPersonId] > currentGen + 1) {
-            generations[r.relatedPersonId] = currentGen + 1;
-            queue.push(r.relatedPersonId);
-          }
-        });
-    }
-    return generations;
-  }
+  }, []);
 
-  // Only re-run D3 rendering when data or size changes
+  // Build person relationships for the detail panel
+  const getPersonRelationships = useCallback((personId: string): SelectedPersonInfo['relationships'] => {
+    const rels: SelectedPersonInfo['relationships'] = [];
+    const seen = new Set<string>();
+
+    relationships.forEach(r => {
+      if (r.personId === personId) {
+        const key = `${r.relatedPersonId}-${r.relationshipType}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          const person = people.find(p => p.id === r.relatedPersonId);
+          if (person) {
+            rels.push({ type: r.relationshipType, name: person.name, personId: person.id });
+          }
+        }
+      } else if (r.relatedPersonId === personId) {
+        const reverseType = r.relationshipType === 'parent' ? 'child' :
+          r.relationshipType === 'child' ? 'parent' : r.relationshipType;
+        const key = `${r.personId}-${reverseType}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          const person = people.find(p => p.id === r.personId);
+          if (person) {
+            rels.push({ type: reverseType, name: person.name, personId: person.id });
+          }
+        }
+      }
+    });
+
+    // Sort: spouse first, then parents, children, siblings, others
+    const order: Record<string, number> = { spouse: 0, parent: 1, child: 2, sibling: 3 };
+    rels.sort((a, b) => (order[a.type] ?? 10) - (order[b.type] ?? 10));
+    return rels;
+  }, [people, relationships]);
+
+  // ── Main D3 render ──
   useEffect(() => {
-    if (!svgRef.current) return;
+    if (!svgRef.current || people.length === 0) return;
+
     const svg = d3.select(svgRef.current);
     svg.selectAll('*').remove();
 
-    // Prepare data
-    const nodes = people.map(person => ({ ...person, id: person.id }));
-    // Definitive deduplication for parent-child links (always parent→child direction if possible)
-    const parentChildPairs = new Set();
-    const dedupedParentLinks = [];
-    relationships.forEach(rel => {
-      if (rel.relationshipType === 'parent' || rel.relationshipType === 'child') {
-        const key = [rel.personId, rel.relatedPersonId].sort().join('-');
-        if (!parentChildPairs.has(key)) {
-          parentChildPairs.add(key);
-          if (rel.relationshipType === 'parent') {
-            dedupedParentLinks.push({
-              source: rel.personId,
-              target: rel.relatedPersonId,
-              type: 'Parent/Child'
-            });
-          } else {
-            dedupedParentLinks.push({
-              source: rel.relatedPersonId,
-              target: rel.personId,
-              type: 'Parent/Child'
-            });
-          }
-        }
-      }
-    });
-    const otherLinks = relationships
-      .filter(r => r.relationshipType !== 'parent' && r.relationshipType !== 'child')
-      .map(rel => ({
-        source: rel.personId,
-        target: rel.relatedPersonId,
-        type: rel.relationshipType
-      }));
-    const links = [...dedupedParentLinks, ...otherLinks];
-
-    // Use previous node positions if available
-    nodes.forEach(node => {
-      if (nodePositions[node.id]) {
-        node.x = nodePositions[node.id].x;
-        node.y = nodePositions[node.id].y;
-      }
-    });
-
-    // Create simulation
+    const nodes = people.map(p => ({ ...p }));
+    const allLinks = buildLinks(relationships);
+    const visibleLinks = allLinks.filter(l => visibleCategories.has(l.category));
     const generations = assignGenerations(people, relationships);
-    const simulation = d3.forceSimulation(nodes as any)
-      .force('link', d3.forceLink(links as any).id((d: any) => d.id).distance(300))
-      .force('charge', d3.forceManyBody().strength(-800))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collide', d3.forceCollide(90))
-      .alpha(0.3)
-      .alphaDecay(0.12);
+    const spousePairs = getSpousePairs(relationships);
 
-    // Zoom/pan
-    const g = svg.append('g').attr('class', 'network-group');
-    gRef.current = g.node() as SVGGElement;
-    const zoom = d3.zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.1, 2])
-      .on('zoom', (event) => {
-        g.attr('transform', event.transform);
-      });
-    zoomRef.current = zoom;
-    svg.call(zoom as any);
+    // Count generations for spacing
+    const genValues = Object.values(generations);
+    const maxGen = Math.max(...genValues, 0);
+    const genSpacing = Math.max(220, height / (maxGen + 2));
 
-    // Draw links as blue, curvy lines (SVG paths)
-    const linkGroup = g.append('g');
-    const link = linkGroup
-      .attr('stroke', '#3b82f6')
-      .attr('stroke-width', 1.5)
-      .selectAll('path')
-      .data(links)
-      .enter().append('path')
-      .attr('fill', 'none')
-      .attr('opacity', 0.7)
-      .style('cursor', 'pointer')
-      .style('pointer-events', 'all')
-      .on('contextmenu', (event, d: any) => {
-        event.preventDefault();
-        console.log('[D3NetworkGraph] Right-click on link:', d);
-        console.log('[D3NetworkGraph] Available relationships:', relationships);
-        
-        const relationship = relationships.find(r => 
-          (r.personId === d.source.id && r.relatedPersonId === d.target.id) ||
-          (r.personId === d.target.id && r.relatedPersonId === d.source.id)
-        );
-        
-        console.log('[D3NetworkGraph] Found relationship:', relationship);
-        
-        if (relationship) {
-          setContextMenu({
-            visible: true,
-            x: event.clientX,
-            y: event.clientY,
-            relationship
-          });
-        } else {
-          console.log('[D3NetworkGraph] No relationship found for link:', d);
-        }
-      });
-
-    // Draw relationship labels as 'Parent/Child' for parent links
-    const linkLabelGroup = linkGroup
-      .selectAll('g.link-label')
-      .data(links)
-      .enter().append('g')
-      .attr('class', 'link-label');
-    linkLabelGroup.append('text')
-      .attr('font-size', 8)
-      .attr('font-weight', 'normal')
-      .attr('fill', '#6b7280')
-      .style('fill', '#6b7280')
-      .attr('stroke', 'none')
-      .style('paint-order', 'stroke fill markers')
-      .attr('text-anchor', 'middle')
-      .attr('alignment-baseline', 'middle')
-      .text(d => d.type === 'Parent/Child' ? 'Parent/Child' : d.type.charAt(0).toUpperCase() + d.type.slice(1));
-
-    // Add SVG filter for shadow
-    svg.insert('defs', ':first-child').html(`
-      <filter id="label-shadow" x="-20%" y="-20%" width="140%" height="140%">
-        <feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#bbb" flood-opacity="0.3"/>
+    // ── SVG defs ──
+    const defs = svg.append('defs');
+    defs.html(`
+      <marker id="arrow-pc" viewBox="0 0 10 6" refX="38" refY="3" markerWidth="7" markerHeight="5" orient="auto">
+        <path d="M0,0 L10,3 L0,6 Z" fill="#6366f1" opacity="0.6"/>
+      </marker>
+      <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+        <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity="0.08"/>
       </filter>
     `);
 
-    // Draw nodes
-    const node = g.append('g')
+    const g = svg.append('g').attr('class', 'graph');
+    gRef.current = g.node();
+
+    // Zoom
+    const zoom = d3.zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.1, 3])
+      .on('zoom', (event) => g.attr('transform', event.transform));
+    zoomRef.current = zoom;
+    svg.call(zoom as any);
+
+    // ── Links ──
+    const linkGroup = g.append('g').attr('class', 'links');
+
+    const link = linkGroup.selectAll('path.link-line')
+      .data(visibleLinks)
+      .enter().append('path')
+      .attr('class', 'link-line')
+      .attr('fill', 'none')
+      .attr('stroke', d => getCategoryForType(d.type)?.color ?? '#a3a3a3')
+      .attr('stroke-width', d => d.category === 'parent_child' ? 2.5 : d.category === 'spouse' ? 2.5 : 1.8)
+      .attr('stroke-dasharray', d => getCategoryForType(d.type)?.dash ?? '')
+      .attr('opacity', 0.55)
+      .attr('marker-end', d => d.category === 'parent_child' ? 'url(#arrow-pc)' : '')
+      .style('cursor', 'pointer')
+      .on('contextmenu', (event, d: any) => {
+        event.preventDefault();
+        const rel = relationships.find(r => r.id === d.relId) ??
+          relationships.find(r =>
+            (r.personId === (d.source.id ?? d.source) && r.relatedPersonId === (d.target.id ?? d.target)) ||
+            (r.personId === (d.target.id ?? d.target) && r.relatedPersonId === (d.source.id ?? d.source))
+          );
+        if (rel) setContextMenu({ visible: true, x: event.clientX, y: event.clientY, relationship: rel });
+      });
+
+    // Link labels (hidden by default, shown on hover/click)
+    const linkLabels = linkGroup.selectAll('text.link-label')
+      .data(visibleLinks)
+      .enter().append('text')
+      .attr('class', 'link-label')
+      .attr('font-size', '10px')
+      .attr('font-weight', '500')
+      .attr('fill', d => getCategoryForType(d.type)?.color ?? '#666')
+      .attr('text-anchor', 'middle')
+      .attr('dy', -6)
+      .attr('opacity', 0) // hidden by default to reduce clutter
+      .text(d => {
+        const cat = getCategoryForType(d.type);
+        return cat?.label ?? d.type;
+      });
+
+    // ── Nodes ──
+    const nodeRadius = 30;
+    const node = g.append('g').attr('class', 'nodes')
       .selectAll('g')
       .data(nodes)
       .enter().append('g')
       .style('cursor', 'pointer')
-      .style('pointer-events', 'all')
-      .call(d3.drag()
-        .on('start', (event, d: any) => {
-          if (!event.active) simulation.alphaTarget(0.3).restart();
-          d.fx = d.x;
-          d.fy = d.y;
+      .call(d3.drag<any, any>()
+        .on('start', (event, d) => {
+          if (!event.active) simulationRef.current?.alphaTarget(0.3).restart();
+          d.fx = d.x; d.fy = d.y;
         })
-        .on('drag', (event, d: any) => {
-          d.fx = event.x;
-          d.fy = event.y;
+        .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
+        .on('end', (event, d) => {
+          if (!event.active) simulationRef.current?.alphaTarget(0);
+          d.fx = event.x; d.fy = event.y;
         })
-        .on('end', (event, d: any) => {
-          if (!event.active) simulation.alphaTarget(0);
-          d.fx = event.x;
-          d.fy = event.y;
-        })
-      )
-      .on('mouseover', (event, d: any) => {
-        // Subtle highlight: only direct neighbors
-        const neighbors = new Set([
-          d.id,
-          ...links.filter(l => l.source === d.id).map(l => l.target),
-          ...links.filter(l => l.target === d.id).map(l => l.source)
-        ]);
-        node.select('circle').attr('stroke', n => neighbors.has(n.id) ? '#fbbf24' : '#bbb').attr('stroke-width', n => neighbors.has(n.id) ? 3 : 1.5);
-        link.attr('stroke', l => l.source.id === d.id || l.target.id === d.id ? '#fbbf24' : '#3b82f6').attr('stroke-width', l => l.source.id === d.id || l.target.id === d.id ? 2.5 : 1.2);
-      })
-      .on('mouseout', () => {
-        // Remove highlight unless selected
-        node.select('circle').attr('stroke', n => selectedNodeId === n.id ? '#fbbf24' : '#bbb').attr('stroke-width', n => selectedNodeId === n.id ? 3 : 1.5);
-        link.attr('stroke', l => selectedNodeId && (l.source.id === selectedNodeId || l.target.id === selectedNodeId) ? '#fbbf24' : '#3b82f6').attr('stroke-width', l => selectedNodeId && (l.source.id === selectedNodeId || l.target.id === selectedNodeId) ? 2.5 : 1.2);
-      })
-      .on('click', (event, d: any) => {
-        setSelectedNodeId(selectedNodeId === d.id ? null : d.id);
-        // Only highlight, do not touch d.fx/d.fy or simulation
-        const neighbors = new Set([
-          d.id,
-          ...links.filter(l => l.source === d.id).map(l => l.target),
-          ...links.filter(l => l.target === d.id).map(l => l.source)
-        ]);
-        node.select('circle').attr('stroke', n => neighbors.has(n.id) ? '#fbbf24' : '#bbb').attr('stroke-width', n => neighbors.has(n.id) ? 3 : 1.5);
-        link.attr('stroke', l => l.source.id === d.id || l.target.id === d.id ? '#fbbf24' : '#3b82f6').attr('stroke-width', l => l.source.id === d.id || l.target.id === d.id ? 2.5 : 1.2);
-      });
+      );
 
-    // Draw nodes with larger invisible interaction radius
+    // Outer glow ring for selected
     node.append('circle')
-      .attr('r', 28) // invisible hit area
-      .attr('fill', 'transparent')
-      .attr('pointer-events', 'all');
+      .attr('class', 'select-ring')
+      .attr('r', nodeRadius + 5)
+      .attr('fill', 'none')
+      .attr('stroke', 'transparent')
+      .attr('stroke-width', 3);
+
+    // Main circle
     node.append('circle')
-      .attr('r', 20)
-      .attr('fill', d => {
-        if (selectedNodes.includes(d.id)) return '#fde68a';
-        if (searchResult === d.id) return '#fbbf24';
-        switch (d.gender) {
-          case 'male': return '#3b82f6';
-          case 'female': return '#ec4899';
-          default: return '#8b5cf6';
-        }
-      })
-      .attr('stroke', d => selectedNodeId === d.id ? '#fbbf24' : '#bbb')
-      .attr('stroke-width', d => selectedNodeId === d.id ? 3 : 1.5);
+      .attr('class', 'main-circle')
+      .attr('r', nodeRadius)
+      .attr('fill', d => d.isDeceased ? NODE_COLORS.deceased : (NODE_COLORS as any)[d.gender] ?? NODE_COLORS.other)
+      .attr('stroke', '#fff')
+      .attr('stroke-width', 3)
+      .attr('filter', 'url(#shadow)');
+
+    // Deceased indicator
+    node.filter(d => !!d.isDeceased)
+      .append('line')
+      .attr('x1', -nodeRadius * 0.5).attr('y1', -nodeRadius * 0.5)
+      .attr('x2', nodeRadius * 0.5).attr('y2', nodeRadius * 0.5)
+      .attr('stroke', '#fff').attr('stroke-width', 2).attr('opacity', 0.4)
+      .attr('pointer-events', 'none');
 
     // Initials
     node.append('text')
       .attr('text-anchor', 'middle')
-      .attr('dy', '0.35em')
-      .attr('font-size', '14px')
-      .attr('font-weight', '600')
+      .attr('dy', '0.38em')
+      .attr('font-size', '16px')
+      .attr('font-weight', '700')
       .attr('fill', 'white')
+      .attr('pointer-events', 'none')
       .text(d => d.name.split(' ').map((p: string) => p[0]).join('').toUpperCase().slice(0, 2));
 
-    // Name labels
+    // Name label
     node.append('text')
-      .attr('y', 32)
+      .attr('class', 'name-label')
+      .attr('y', nodeRadius + 16)
       .attr('text-anchor', 'middle')
       .attr('font-size', '12px')
-      .attr('fill', '#222')
+      .attr('font-weight', '600')
+      .attr('fill', '#1e293b')
+      .attr('pointer-events', 'none')
       .text(d => d.name);
 
-    // Simulation tick
-    simulation.on('tick', () => {
-      // Draw curvy links (cubic Bezier)
-      link
-        .attr('d', d => {
-          const sx = (d.source as any).x;
-          const sy = (d.source as any).y;
-          const tx = (d.target as any).x;
-          const ty = (d.target as any).y;
-          // Curve control points: horizontally or vertically aligned
-          const dx = tx - sx;
-          const dy = ty - sy;
-          const dr = Math.sqrt(dx * dx + dy * dy) * 0.3;
-          // Use a cubic Bezier curve
-          return `M${sx},${sy} C${sx},${sy + dr} ${tx},${ty - dr} ${tx},${ty}`;
-        });
-      linkLabelGroup
-        .attr('transform', d => {
-          const x = ((d.source as any).x + (d.target as any).x) / 2;
-          const y = ((d.source as any).y + (d.target as any).y) / 2 - 14; // offset above line
-          return `translate(${x},${y})`;
-        });
-      linkLabelGroup.select('text')
-        .attr('y', 0)
-        .attr('fill', '#6b7280')
-        .style('fill', '#6b7280')
-        .attr('font-weight', 'normal')
-        .attr('font-size', 8)
-        .attr('stroke', 'none')
-        .style('paint-order', 'stroke fill markers');
-      // Log the style of the first label
-      const firstLabel = linkLabelGroup.select('text').nodes()[0] as Element;
-      if (firstLabel) {
-        const style = window.getComputedStyle(firstLabel);
-        console.log('[D3NetworkGraph] First label style:', {
-          fill: style.fill,
-          fontSize: style.fontSize,
-          fontWeight: style.fontWeight,
-          text: firstLabel.textContent
+    // Years label
+    node.append('text')
+      .attr('y', nodeRadius + 29)
+      .attr('text-anchor', 'middle')
+      .attr('font-size', '10px')
+      .attr('fill', '#94a3b8')
+      .attr('pointer-events', 'none')
+      .text(d => {
+        if (!d.birthDate) return '';
+        const year = new Date(d.birthDate).getFullYear();
+        if (d.isDeceased && d.deathDate) return `${year} - ${new Date(d.deathDate).getFullYear()}`;
+        return `b. ${year}`;
+      });
+
+    // ── Click: select node, show relationships, highlight connected ──
+    node.on('click', (event, d: any) => {
+      event.stopPropagation();
+      const connectedIds = new Set<string>([d.id]);
+      const connectedLinkIndices = new Set<number>();
+
+      visibleLinks.forEach((l, i) => {
+        const sid = (l.source as any).id ?? l.source;
+        const tid = (l.target as any).id ?? l.target;
+        if (sid === d.id || tid === d.id) {
+          connectedIds.add(sid);
+          connectedIds.add(tid);
+          connectedLinkIndices.add(i);
+        }
+      });
+
+      // Dim non-connected nodes
+      node.select('.main-circle')
+        .transition().duration(200)
+        .attr('opacity', (n: any) => connectedIds.has(n.id) ? 1 : 0.2);
+      node.select('.name-label')
+        .transition().duration(200)
+        .attr('opacity', (n: any) => connectedIds.has(n.id) ? 1 : 0.15);
+      node.select('.select-ring')
+        .attr('stroke', (n: any) => n.id === d.id ? '#fbbf24' : connectedIds.has(n.id) ? '#fbbf2480' : 'transparent');
+
+      // Highlight connected links, show their labels
+      link.transition().duration(200)
+        .attr('opacity', (l: any, i: number) => connectedLinkIndices.has(i) ? 0.9 : 0.06)
+        .attr('stroke-width', (l: any, i: number) => connectedLinkIndices.has(i) ? 3.5 : 1);
+      linkLabels.transition().duration(200)
+        .attr('opacity', (l: any, i: number) => connectedLinkIndices.has(i) ? 1 : 0)
+        .attr('font-size', (l: any, i: number) => connectedLinkIndices.has(i) ? '11px' : '10px');
+
+      // Show detail panel
+      const person = people.find(p => p.id === d.id);
+      if (person) {
+        setSelectedPerson({
+          person,
+          relationships: getPersonRelationships(d.id),
         });
       }
-      console.log('[D3NetworkGraph] Simulation tick');
-      node
-        .attr('transform', d => `translate(${(d as any).x},${(d as any).y})`);
-      // Save node positions
-      const newPositions: Record<string, {x: number, y: number}> = {};
-      nodes.forEach(n => {
-        newPositions[n.id] = { x: n.x ?? width/2, y: n.y ?? height/2 };
-      });
-      setNodePositions(newPositions);
     });
 
-    // Improve node alignment: apply a vertical layering (tree-like) force
-    simulation.force('y', d3.forceY((d: any) => (generations[d.id] ?? 0) * 180 + 100).strength(1));
+    // Click on background to deselect
+    svg.on('click', () => {
+      node.select('.main-circle').transition().duration(200).attr('opacity', 1);
+      node.select('.name-label').transition().duration(200).attr('opacity', 1);
+      node.select('.select-ring').attr('stroke', 'transparent');
+      link.transition().duration(200)
+        .attr('opacity', 0.55)
+        .attr('stroke-width', (d: any) => d.category === 'parent_child' ? 2.5 : d.category === 'spouse' ? 2.5 : 1.8);
+      linkLabels.transition().duration(200).attr('opacity', 0);
+      setSelectedPerson(null);
+    });
 
-    return () => {
-      simulation.stop();
-    };
-  }, [people, relationships, width, height, selectedNodes, searchResult, selectedNodeId]);
+    // Hover: subtle highlight without changing selection
+    node.on('mouseover', function (event, d: any) {
+      if (selectedPerson) return; // don't override click selection
+      const connectedIds = new Set<string>([d.id]);
+      visibleLinks.forEach(l => {
+        const sid = (l.source as any).id ?? l.source;
+        const tid = (l.target as any).id ?? l.target;
+        if (sid === d.id) connectedIds.add(tid);
+        if (tid === d.id) connectedIds.add(sid);
+      });
+      node.select('.main-circle')
+        .attr('opacity', (n: any) => connectedIds.has(n.id) ? 1 : 0.3);
+      link.attr('opacity', (l: any) => {
+        const sid = (l.source as any).id ?? l.source;
+        const tid = (l.target as any).id ?? l.target;
+        return (sid === d.id || tid === d.id) ? 0.9 : 0.1;
+      });
+      linkLabels.attr('opacity', (l: any) => {
+        const sid = (l.source as any).id ?? l.source;
+        const tid = (l.target as any).id ?? l.target;
+        return (sid === d.id || tid === d.id) ? 1 : 0;
+      });
+    })
+    .on('mouseout', function () {
+      if (selectedPerson) return;
+      node.select('.main-circle').attr('opacity', 1);
+      link.attr('opacity', 0.55);
+      linkLabels.attr('opacity', 0);
+    });
 
-  // Fix zoom in/out to use d3.zoom().scaleBy on the SVG selection
-  const handleZoom = (factor: number) => {
+    // ── Simulation ──
+    const simulation = d3.forceSimulation(nodes as any)
+      .force('link', d3.forceLink(visibleLinks as any).id((d: any) => d.id).distance(200).strength(0.5))
+      .force('charge', d3.forceManyBody().strength(-500))
+      .force('center', d3.forceCenter(width / 2, height / 2).strength(0.02))
+      .force('collide', d3.forceCollide(nodeRadius + 40))
+      // Vertical layering by generation
+      .force('y', d3.forceY((d: any) => (generations[d.id] ?? 0) * genSpacing + genSpacing).strength(0.9))
+      // Gentle horizontal centering
+      .force('x', d3.forceX((d: any) => {
+        // Pull spouses together
+        const spouseId = spousePairs.get(d.id);
+        if (spouseId) {
+          const spouseNode = nodes.find(n => n.id === spouseId);
+          if (spouseNode && (spouseNode as any).x) return (spouseNode as any).x;
+        }
+        return width / 2;
+      }).strength(0.05))
+      .alpha(0.8)
+      .alphaDecay(0.025);
+
+    simulationRef.current = simulation;
+
+    simulation.on('tick', () => {
+      link.attr('d', (d: any) => {
+        const sx = d.source.x, sy = d.source.y;
+        const tx = d.target.x, ty = d.target.y;
+        if (d.category === 'spouse') {
+          return `M${sx},${sy} L${tx},${ty}`;
+        }
+        if (d.category === 'parent_child') {
+          // Smooth S-curve top to bottom
+          const my = (sy + ty) / 2;
+          return `M${sx},${sy} C${sx},${my} ${tx},${my} ${tx},${ty}`;
+        }
+        // Curved arc for sibling/cousin/etc (offset to avoid overlap with vertical lines)
+        const dx = tx - sx;
+        const dy = ty - sy;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const bend = dist * 0.2;
+        const mx = (sx + tx) / 2 - (dy / dist) * bend;
+        const my = (sy + ty) / 2 + (dx / dist) * bend;
+        return `M${sx},${sy} Q${mx},${my} ${tx},${ty}`;
+      });
+
+      linkLabels
+        .attr('x', (d: any) => (d.source.x + d.target.x) / 2)
+        .attr('y', (d: any) => {
+          if (d.category === 'parent_child') return (d.source.y + d.target.y) / 2 - 6;
+          // Offset for curved links
+          const dx = d.target.x - d.source.x;
+          const dy = d.target.y - d.source.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          const bend = dist * 0.2;
+          return (d.source.y + d.target.y) / 2 + (dx / dist) * bend - 6;
+        });
+
+      node.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
+    });
+
+    simulation.on('end', () => fitToView());
+
+    return () => { simulation.stop(); };
+  }, [people, relationships, width, height, visibleCategories, getPersonRelationships]);
+
+  // ── Controls ──
+  const handleZoom = useCallback((factor: number) => {
     if (zoomRef.current && svgRef.current) {
-      const svg = d3.select(svgRef.current);
-      svg.transition().duration(300).call(zoomRef.current.scaleBy, factor);
+      d3.select(svgRef.current).transition().duration(300).call(zoomRef.current.scaleBy, factor);
     }
-  };
+  }, []);
 
-  const handleCenter = () => {
+  const handleCenter = useCallback(() => {
     if (zoomRef.current && svgRef.current) {
-      const svg = d3.select(svgRef.current);
-      svg.transition().duration(300).call(
-        zoomRef.current.transform,
-        d3.zoomIdentity
-      );
+      d3.select(svgRef.current).transition().duration(300).call(zoomRef.current.transform, d3.zoomIdentity);
     }
-  };
+  }, []);
 
-  const handleFit = () => {
-    if (gRef.current && svgRef.current) {
-      const svg = d3.select(svgRef.current);
-      const g = d3.select(gRef.current);
-             const bounds = g.node()?.getBBox();
-       if (bounds) {
-         const fullWidth = width;
-         const fullHeight = height;
-         const boundsWidth = bounds.width;
-         const boundsHeight = bounds.height;
-         const midX = bounds.x + boundsWidth / 2;
-         const midY = bounds.y + boundsHeight / 2;
-         if (boundsWidth === 0 || boundsHeight === 0) return;
-         const scale = 0.9 / Math.max(boundsWidth / fullWidth, boundsHeight / fullHeight);
-         const translate = [fullWidth / 2 - scale * midX, fullHeight / 2 - scale * midY];
-         svg.transition().duration(300).call(
-           zoomRef.current!.transform,
-           d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale)
-         );
-       }
+  const fitToView = useCallback(() => {
+    if (!gRef.current || !svgRef.current || !zoomRef.current) return;
+    const bounds = gRef.current.getBBox();
+    if (bounds.width === 0 || bounds.height === 0) return;
+    const pad = 80;
+    const scale = Math.min(
+      (width - pad * 2) / bounds.width,
+      (height - pad * 2) / bounds.height,
+      1.0
+    );
+    const tx = width / 2 - scale * (bounds.x + bounds.width / 2);
+    const ty = height / 2 - scale * (bounds.y + bounds.height / 2);
+    d3.select(svgRef.current).transition().duration(500).call(
+      zoomRef.current.transform,
+      d3.zoomIdentity.translate(tx, ty).scale(scale)
+    );
+  }, [width, height]);
+
+  // ── Export ──
+  const exportSVG = useCallback(() => {
+    if (!svgRef.current) return;
+    const clone = svgRef.current.cloneNode(true) as SVGSVGElement;
+    // Expand viewBox to fit content
+    if (gRef.current) {
+      const bounds = gRef.current.getBBox();
+      const pad = 40;
+      clone.setAttribute('viewBox', `${bounds.x - pad} ${bounds.y - pad} ${bounds.width + pad * 2} ${bounds.height + pad * 2}`);
+      clone.setAttribute('width', String(bounds.width + pad * 2));
+      clone.setAttribute('height', String(bounds.height + pad * 2));
+      // Remove the transform on <g class="graph"> so it renders at actual coords
+      const gElem = clone.querySelector('.graph');
+      if (gElem) gElem.removeAttribute('transform');
+    }
+    const svgData = new XMLSerializer().serializeToString(clone);
+    const blob = new Blob([svgData], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.download = `family_tree_${new Date().toISOString().split('T')[0]}.svg`;
+    link.href = url;
+    link.click();
+    URL.revokeObjectURL(url);
+    setShowExportMenu(false);
+  }, []);
+
+  const exportPNG = useCallback(async () => {
+    if (!svgRef.current || !gRef.current) return;
+    setExporting(true);
+    try {
+      const bounds = gRef.current.getBBox();
+      const pad = 60;
+      const exportWidth = bounds.width + pad * 2;
+      const exportHeight = bounds.height + pad * 2;
+      const scale = 2;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = exportWidth * scale;
+      canvas.height = exportHeight * scale;
+      const ctx = canvas.getContext('2d')!;
+      ctx.scale(scale, scale);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, exportWidth, exportHeight);
+
+      const clone = svgRef.current.cloneNode(true) as SVGSVGElement;
+      clone.setAttribute('viewBox', `${bounds.x - pad} ${bounds.y - pad} ${exportWidth} ${exportHeight}`);
+      clone.setAttribute('width', String(exportWidth));
+      clone.setAttribute('height', String(exportHeight));
+      const gElem = clone.querySelector('.graph');
+      if (gElem) gElem.removeAttribute('transform');
+
+      const svgData = new XMLSerializer().serializeToString(clone);
+      const img = new Image();
+      const blob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => {
+          ctx.drawImage(img, 0, 0, exportWidth, exportHeight);
+          URL.revokeObjectURL(url);
+          const pngUrl = canvas.toDataURL('image/png');
+          const link = document.createElement('a');
+          link.download = `family_tree_${new Date().toISOString().split('T')[0]}.png`;
+          link.href = pngUrl;
+          link.click();
+          resolve();
+        };
+        img.onerror = reject;
+        img.src = url;
+      });
+    } finally {
+      setExporting(false);
+      setShowExportMenu(false);
+    }
+  }, []);
+
+  const printView = useCallback(() => {
+    if (!svgRef.current || !gRef.current) return;
+    const bounds = gRef.current.getBBox();
+    const pad = 60;
+    const clone = svgRef.current.cloneNode(true) as SVGSVGElement;
+    clone.setAttribute('viewBox', `${bounds.x - pad} ${bounds.y - pad} ${bounds.width + pad * 2} ${bounds.height + pad * 2}`);
+    clone.setAttribute('width', '100%');
+    clone.setAttribute('height', '100%');
+    const gElem = clone.querySelector('.graph');
+    if (gElem) gElem.removeAttribute('transform');
+
+    const printWindow = window.open('', '_blank');
+    if (printWindow) {
+      printWindow.document.write(`
+        <!DOCTYPE html><html><head><title>Family Tree</title>
+        <style>
+          body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: white; }
+          svg { max-width: 100%; max-height: 100vh; }
+          @media print { body { margin: 0; } svg { width: 100%; height: auto; } }
+        </style>
+        </head><body>${clone.outerHTML}</body></html>
+      `);
+      printWindow.document.close();
+      setTimeout(() => printWindow.print(), 500);
+    }
+    setShowExportMenu(false);
+  }, []);
+
+  const handleSearchSelect = (personId: string) => {
+    setSearchOpen(false);
+    setSearchValue('');
+    if (gRef.current && zoomRef.current && svgRef.current) {
+      const nodeData = d3.select(gRef.current).selectAll<SVGGElement, any>('.nodes g')
+        .filter((d: any) => d.id === personId);
+      if (!nodeData.empty()) {
+        const d: any = nodeData.datum();
+        const scale = 1.2;
+        d3.select(svgRef.current).transition().duration(500).call(
+          zoomRef.current.transform,
+          d3.zoomIdentity.translate(width / 2 - scale * d.x, height / 2 - scale * d.y).scale(scale)
+        );
+        nodeData.select('.select-ring')
+          .attr('stroke', '#fbbf24')
+          .transition().duration(2000)
+          .attr('stroke', 'transparent');
+      }
     }
   };
 
@@ -440,111 +698,120 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     }
   };
 
-  const handleAddRelationship = () => {
-    if (selectedNodes.length === 2 && onAddRelationship) {
-      onAddRelationship(selectedNodes[0], selectedNodes[1], relationshipType);
-      setSelectedNodes([]);
-      setRelationshipType('parent');
-    }
-  };
-
-
-
-  // Center and highlight node on search
-  const handleSearchSelect = (personId: string) => {
-    setSearchResult(personId);
-    setSearchOpen(false);
-    // Center the node
-    if (nodePositions[personId] && zoomRef.current && svgRef.current) {
-      const svg = d3.select(svgRef.current);
-      const { x, y } = nodePositions[personId];
-      const scale = 1.2;
-      svg.transition().duration(400).call(
-        zoomRef.current.transform,
-        d3.zoomIdentity.translate(width/2 - scale*x, height/2 - scale*y).scale(scale)
-      );
-    }
-    setTimeout(() => setSearchResult(null), 2000); // remove highlight after 2s
-  };
+  if (people.length === 0) {
+    return (
+      <div className="w-full h-full flex items-center justify-center text-muted-foreground">
+        <div className="text-center">
+          <p className="text-lg font-medium mb-2">No family members yet</p>
+          <p className="text-sm">Add people to see the family tree visualization</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef} className="relative w-full h-full">
       <svg
         ref={svgRef}
         width={width}
         height={height}
-        className="border border-gray-200 rounded-lg bg-white"
+        className="bg-white"
+        style={{ width: '100%', height: '100%' }}
       />
-      
-      {/* Relationship creation dropdown */}
-      {selectedNodes.length === 2 && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 bg-white border border-gray-200 rounded-lg shadow-lg px-4 py-3 flex items-center space-x-2">
-          <span className="font-medium">Create relationship between</span>
-          <span className="font-semibold text-genealogy-primary">{people.find(p => p.id === selectedNodes[0])?.name}</span>
-          <span>and</span>
-          <span className="font-semibold text-genealogy-primary">{people.find(p => p.id === selectedNodes[1])?.name}</span>
-          <select
-            className="ml-2 border rounded px-2 py-1"
-            value={relationshipType}
-            onChange={e => setRelationshipType(e.target.value as RelationshipType)}
-          >
-            <option value="parent">Parent</option>
-            <option value="child">Child</option>
-            <option value="spouse">Spouse</option>
-            <option value="sibling">Sibling</option>
-            <option value="grandparent">Grandparent</option>
-            <option value="grandchild">Grandchild</option>
-            <option value="aunt">Aunt</option>
-            <option value="uncle">Uncle</option>
-            <option value="niece">Niece</option>
-            <option value="nephew">Nephew</option>
-            <option value="cousin">Cousin</option>
-            <option value="step-parent">Step Parent</option>
-            <option value="step-child">Step Child</option>
-            <option value="adopted-parent">Adopted Parent</option>
-            <option value="adopted-child">Adopted Child</option>
-            <option value="in-law">In-law</option>
-          </select>
-          <button
-            className="ml-2 px-3 py-1 bg-genealogy-primary text-white rounded hover:bg-genealogy-secondary flex items-center"
-            onClick={handleAddRelationship}
-          >
-            <Plus className="w-4 h-4 mr-1" />Add
-          </button>
-          <button
-            className="ml-2 px-2 py-1 text-gray-500 hover:text-gray-700"
-            onClick={() => setSelectedNodes([])}
-          >
-            Cancel
-          </button>
+
+      {/* ── Legend + Filters (bottom-left) ── */}
+      <div className="absolute bottom-3 left-3 bg-white/95 backdrop-blur-sm rounded-lg shadow border px-3 py-2.5 text-xs max-w-[280px] z-20">
+        <div className="font-semibold text-gray-700 mb-2">Show / Hide Relationships</div>
+
+        {/* Node colors */}
+        <div className="flex items-center gap-3 mb-2 pb-2 border-b border-gray-100">
+          <div className="flex items-center gap-1">
+            <span className="w-3 h-3 rounded-full" style={{ background: NODE_COLORS.male }} /> Male
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="w-3 h-3 rounded-full" style={{ background: NODE_COLORS.female }} /> Female
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="w-3 h-3 rounded-full" style={{ background: NODE_COLORS.deceased }} /> Deceased
+          </div>
+        </div>
+
+        {/* Relationship toggles */}
+        <div className="space-y-1">
+          {REL_CATEGORIES.map(cat => (
+            <label key={cat.key} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5">
+              <input
+                type="checkbox"
+                checked={visibleCategories.has(cat.key)}
+                onChange={() => toggleCategory(cat.key)}
+                className="rounded border-gray-300"
+              />
+              <svg width="24" height="10" className="shrink-0">
+                <line x1="0" y1="5" x2="24" y2="5"
+                  stroke={cat.color} strokeWidth="2.5"
+                  strokeDasharray={cat.dash || 'none'} />
+              </svg>
+              <span className="text-gray-700">{cat.label}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Selected Person Detail Panel (bottom-right) ── */}
+      {selectedPerson && (
+        <div className="absolute bottom-3 right-14 bg-white/95 backdrop-blur-sm rounded-lg shadow-lg border w-72 max-h-[320px] overflow-y-auto z-20">
+          <div className="sticky top-0 bg-white border-b px-3 py-2 flex items-center justify-between">
+            <div>
+              <div className="font-semibold text-sm">{selectedPerson.person.name}</div>
+              <div className="text-xs text-muted-foreground capitalize">
+                {selectedPerson.person.gender}
+                {selectedPerson.person.birthDate && ` · b. ${new Date(selectedPerson.person.birthDate).getFullYear()}`}
+                {selectedPerson.person.birthPlace && ` · ${selectedPerson.person.birthPlace}`}
+              </div>
+            </div>
+            <button onClick={() => setSelectedPerson(null)} className="p-1 hover:bg-gray-100 rounded">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <div className="px-3 py-2">
+            <div className="text-xs font-medium text-gray-500 mb-1">
+              Relationships ({selectedPerson.relationships.length})
+            </div>
+            {selectedPerson.relationships.length === 0 ? (
+              <div className="text-xs text-gray-400 py-2">No relationships found</div>
+            ) : (
+              <div className="space-y-1">
+                {selectedPerson.relationships.map((rel, i) => {
+                  const cat = getCategoryForType(rel.type);
+                  return (
+                    <div key={i} className="flex items-center gap-2 text-xs py-0.5">
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: cat?.color ?? '#999' }} />
+                      <span className="text-gray-500 w-20 shrink-0 capitalize">{rel.type}</span>
+                      <span className="font-medium text-gray-800 truncate">{rel.name}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
-      {/* Search icon and dropdown */}
-      <div className="absolute top-4 right-24 z-30 flex space-x-2">
+      {/* ── Search (top-left) ── */}
+      <div className="absolute top-3 left-3 z-30">
         <button
-          className="p-2 bg-white rounded-lg shadow-md hover:bg-gray-50 border border-gray-200"
-          title="Add Relationship"
-          onClick={() => {
-            // Show instructions for adding relationships
-            alert('Select two people by clicking on them to create a relationship between them.');
-          }}
-        >
-          <Plus className="w-4 h-4" />
-        </button>
-        <button
-          className="p-2 bg-white rounded-lg shadow-md hover:bg-gray-50 border border-gray-200"
-          title="Search Node"
+          className="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 border"
+          title="Search"
           onClick={() => setSearchOpen(v => !v)}
         >
           <Search className="w-4 h-4" />
         </button>
         {searchOpen && (
-          <div className="absolute right-0 mt-2 bg-white border border-gray-200 rounded-lg shadow-lg p-2 w-64">
+          <div className="mt-1 bg-white border rounded-lg shadow-lg p-2 w-64">
             <input
               type="text"
-              className="w-full border rounded px-2 py-1 mb-2"
-              placeholder="Search person by name..."
+              className="w-full border rounded px-2 py-1 mb-1 text-sm"
+              placeholder="Search by name..."
               value={searchValue}
               onChange={e => setSearchValue(e.target.value)}
               autoFocus
@@ -553,115 +820,71 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
               {people.filter(p => p.name.toLowerCase().includes(searchValue.toLowerCase())).map(p => (
                 <div
                   key={p.id}
-                  className="px-2 py-1 hover:bg-genealogy-primary/10 cursor-pointer rounded"
+                  className="px-2 py-1 hover:bg-indigo-50 cursor-pointer rounded text-sm"
                   onClick={() => handleSearchSelect(p.id)}
                 >
                   {p.name}
                 </div>
               ))}
-              {people.filter(p => p.name.toLowerCase().includes(searchValue.toLowerCase())).length === 0 && (
-                <div className="text-gray-400 px-2 py-1">No results</div>
-              )}
             </div>
           </div>
         )}
       </div>
 
-      {/* Zoom Controls + Export */}
-      <div className="absolute top-4 right-4 flex flex-col space-y-2 z-20">
-        <button
-          onClick={() => handleZoom(1.2)}
-          className="p-2 bg-white rounded-lg shadow-md hover:bg-gray-50 border border-gray-200"
-          title="Zoom In"
-        >
-          <ZoomIn className="w-4 h-4" />
-        </button>
-        <button
-          onClick={() => handleZoom(1/1.2)}
-          className="p-2 bg-white rounded-lg shadow-md hover:bg-gray-50 border border-gray-200"
-          title="Zoom Out"
-        >
-          <ZoomOut className="w-4 h-4" />
-        </button>
-        <button
-          onClick={handleCenter}
-          className="p-2 bg-white rounded-lg shadow-md hover:bg-gray-50 border border-gray-200"
-          title="Reset View"
-        >
-          <RotateCcw className="w-4 h-4" />
-        </button>
-        <button
-          onClick={handleFit}
-          className="p-2 bg-white rounded-lg shadow-md hover:bg-gray-50 border border-gray-200"
-          title="Fit to View"
-        >
-          <Maximize2 className="w-4 h-4" />
-        </button>
-        <button
-          onClick={handleExportPNG}
-          className="p-2 bg-blue-600 text-white rounded-lg shadow-md border border-blue-700 hover:bg-blue-700 disabled:opacity-50"
-          title="Export as PNG"
-          disabled={exporting}
-        >
-          <Download className="w-4 h-4" />
-        </button>
+      {/* ── Zoom + Export Controls (top-right) ── */}
+      <div className="absolute top-3 right-3 flex flex-col gap-1 z-20">
+        <button onClick={() => handleZoom(1.3)} className="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 border" title="Zoom In"><ZoomIn className="w-4 h-4" /></button>
+        <button onClick={() => handleZoom(1 / 1.3)} className="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 border" title="Zoom Out"><ZoomOut className="w-4 h-4" /></button>
+        <button onClick={handleCenter} className="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 border" title="Reset View"><RotateCcw className="w-4 h-4" /></button>
+        <button onClick={fitToView} className="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 border" title="Fit to View"><Maximize2 className="w-4 h-4" /></button>
+
+        {/* Export dropdown */}
+        <div className="relative">
+          <button
+            onClick={() => setShowExportMenu(v => !v)}
+            className="p-2 bg-indigo-600 text-white rounded-lg shadow-sm hover:bg-indigo-700 border border-indigo-700"
+            title="Export / Print"
+          >
+            <Download className="w-4 h-4" />
+          </button>
+          {showExportMenu && (
+            <div className="absolute right-0 mt-1 bg-white border rounded-lg shadow-lg py-1 w-44 z-50">
+              <button onClick={printView} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
+                <Printer className="w-4 h-4" /> Print / PDF
+              </button>
+              <button onClick={exportPNG} disabled={exporting} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50">
+                <FileDown className="w-4 h-4" /> Export as PNG
+              </button>
+              <button onClick={exportSVG} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
+                <FileDown className="w-4 h-4" /> Export as SVG
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
-
-
-      {/* Context Menu */}
-      {contextMenu.visible && (
+      {/* ── Context Menu ── */}
+      {contextMenu.visible && contextMenu.relationship && (
         <div
-          className="absolute z-50 bg-white rounded-lg shadow-lg border border-gray-200 py-2 min-w-[200px]"
-          style={{
-            left: contextMenu.x,
-            top: contextMenu.y,
-            transform: 'translate(-50%, -100%)'
-          }}
-          onClick={(e) => e.stopPropagation()}
+          className="absolute z-50 bg-white rounded-lg shadow-lg border py-1 min-w-[180px]"
+          style={{ left: contextMenu.x, top: contextMenu.y, transform: 'translate(-50%, -110%)' }}
+          onClick={e => e.stopPropagation()}
         >
-          {contextMenu.relationship && (
-            <>
-              <div className="px-4 py-2 border-b border-gray-100">
-                <div className="font-medium text-sm text-gray-900">Relationship</div>
-                <div className="text-xs text-gray-600">
-                  {people.find(p => p.id === contextMenu.relationship?.personId)?.name} → 
-                  {people.find(p => p.id === contextMenu.relationship?.relatedPersonId)?.name}
-                </div>
-                <div className="text-xs text-gray-500 capitalize">
-                  {contextMenu.relationship.relationshipType}
-                </div>
-              </div>
-              <button
-                onClick={handleDeleteRelationship}
-                className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center space-x-2"
-              >
-                <Trash2 className="w-4 h-4" />
-                <span>Delete Relationship</span>
-              </button>
-            </>
-          )}
-          
-          {contextMenu.person && (
-            <>
-              <div className="px-4 py-2 border-b border-gray-100">
-                <div className="font-medium text-sm text-gray-900">Person</div>
-                <div className="text-xs text-gray-600">{contextMenu.person.name}</div>
-              </div>
-              <button
-                onClick={() => {
-                  // TODO: Implement person edit functionality
-                  setContextMenu(prev => ({ ...prev, visible: false }));
-                }}
-                className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center space-x-2"
-              >
-                <Edit className="w-4 h-4" />
-                <span>Edit Person</span>
-              </button>
-            </>
-          )}
+          <div className="px-3 py-2 border-b">
+            <div className="text-xs text-gray-500 capitalize">{contextMenu.relationship.relationshipType}</div>
+            <div className="text-sm font-medium">
+              {people.find(p => p.id === contextMenu.relationship?.personId)?.name} &rarr;{' '}
+              {people.find(p => p.id === contextMenu.relationship?.relatedPersonId)?.name}
+            </div>
+          </div>
+          <button
+            onClick={handleDeleteRelationship}
+            className="w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+          >
+            Delete Relationship
+          </button>
         </div>
       )}
     </div>
   );
-}; 
+};

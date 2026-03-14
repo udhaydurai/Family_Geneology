@@ -24,7 +24,7 @@ export interface Relationship {
   notes?: string;
 }
 
-export type RelationshipType = 
+export type RelationshipType =
   | 'parent'
   | 'child'
   | 'spouse'
@@ -82,3 +82,20 @@ export interface FamilyTreeState {
     showDates: boolean;
   };
 }
+
+export type ChangeType = 'add_person' | 'edit_person' | 'delete_person' | 'add_relationship' | 'delete_relationship';
+
+export interface PendingChange {
+  id: string;
+  change_type: ChangeType;
+  payload: Record<string, unknown>;
+  status: 'pending' | 'approved' | 'rejected';
+  submitted_by: string | null;
+  submitted_by_email: string | null;
+  reviewed_by: string | null;
+  review_note: string | null;
+  created_at: string;
+  reviewed_at: string | null;
+}
+
+export type UserRole = 'admin' | 'contributor';

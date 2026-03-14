@@ -1,135 +1,107 @@
-# Kindred Weave Explorer
+# Family Tree
 
-A modern, interactive family tree explorer and relationship network visualization built with React, D3, TypeScript, and shadcn/ui. Discover, visualize, and manage your family connections with an intuitive network graph interface.
+A collaborative family tree app built for preserving family history. Family members can contribute; an admin reviews and approves changes so data isn't accidentally overwritten.
 
-## 🌟 Features
+## Features
 
-### 📊 Interactive Network Visualization
-- **D3-powered network graph** with smooth animations and physics simulation
-- **Zoom, pan, and fit-to-screen** controls for easy navigation
-- **Node selection and highlighting** for focused exploration
-- **Stable layout** with persistent node positions to reduce movement
+### Interactive Tree Visualization
+- D3.js force-directed network graph with generational layering
+- Click any node to see all their relationships in a detail panel
+- Hover to highlight connections; non-connected nodes dim for clarity
+- Relationship labels appear on lines when a node is selected
+- Drag nodes to rearrange; zoom, pan, fit-to-view controls
 
-### 👥 Family Data Management
-- **CSV import/export** with comprehensive family data templates
-- **Sample data** for testing and demonstration
-- **Add, edit, and delete** people and relationships
-- **Multi-select node creation** - select two nodes and create relationships directly from the graph
-- **Right-click context menu** for quick relationship deletion
+### Relationship Filtering
+- Toggle relationship types on/off via checkboxes in the legend
+- Defaults to Parent/Child + Spouse + Sibling (clean view)
+- Enable Grandparent, Aunt/Uncle, Cousin, In-law as needed
+- Color-coded lines with distinct dash patterns per type
 
-### 🔍 Smart Search & Navigation
-- **Search functionality** to quickly find and center any person in the network
-- **Visual highlighting** of searched nodes
-- **People tab** with detailed person cards and relationship overview
+### Relationship Inference
+- Automatically derives siblings, grandparents, aunts/uncles, cousins, and in-laws from parent/child + spouse data
+- One-click "Infer" button in the header
 
-### 📤 Export & Sharing
-- **High-resolution PNG export** directly from the Tree View
-- **Current view capture** including zoom level and pan position
-- **CSV data export** for backup and sharing
+### Collaboration (Supabase)
+- Google sign-in or magic link authentication
+- Contributors submit changes → Admin reviews in a queue → Approve or reject
+- Row-level security ensures only admins can modify live data
+- Works fully offline with localStorage when Supabase is not configured
 
-### 🐳 Deployment Ready
-- **Docker support** with production-ready containerization
-- **Vercel deployment** compatible
-- **Static build** optimization
+### Export & Print
+- **Print / PDF** — opens a clean print window with browser "Save as PDF"
+- **PNG export** — high-resolution 2x image
+- **SVG export** — vector format, scales perfectly
+- Filters control what's visible in all exports
 
-## 🚀 Quick Start
+## Quick Start
 
-### Local Development
 ```bash
-# Clone the repository
-git clone https://github.com/udhaydurai/Family_Geneology.git
-cd Family_Geneology
-
-# Install dependencies
 npm install
-
-# Start development server
 npm run dev
+# Open http://localhost:8080
+# Click "Load Test Data" to see a 4-generation family
+# Click "Infer" to auto-derive relationships
 ```
 
-### Docker Deployment
+### Docker
 ```bash
-# Build the Docker image
-docker build -t kindred-weave-explorer .
-
-# Run the container
-docker run -p 4173:4173 kindred-weave-explorer
-
-# Access at http://localhost:4173
+docker build -t family-tree .
+docker run -p 4173:4173 family-tree
 ```
 
-## 📖 Usage Guide
+## Setting Up Collaboration (Optional)
 
-### 1. Getting Started
-- **Load Sample Data**: Click "Load Sample Data" to see the app in action
-- **Download Template**: Get a CSV template for your family data
-- **Upload Your Data**: Import your family information via CSV
+1. Create a free project at [supabase.com](https://supabase.com)
+2. Run `supabase/schema.sql` in the Supabase SQL Editor
+3. Enable Google auth in Dashboard > Auth > Providers
+4. Copy `.env.example` to `.env` and fill in your keys:
+   ```
+   VITE_SUPABASE_URL=https://your-project.supabase.co
+   VITE_SUPABASE_ANON_KEY=your-anon-key
+   ```
+5. Sign up, then make yourself admin:
+   ```sql
+   INSERT INTO user_roles (user_id, role, display_name)
+   VALUES ('YOUR_USER_ID', 'admin', 'Your Name');
+   ```
+6. Deploy to Vercel with the same env vars
 
-### 2. Exploring Your Family Tree
-- **Tree View**: Interactive network graph showing all relationships
-- **Zoom Controls**: Use the zoom buttons or mouse wheel to navigate
-- **Search**: Find specific people quickly with the search icon
-- **Node Selection**: Click nodes to select them for relationship creation
+## Tech Stack
 
-### 3. Managing Relationships
-- **Add Relationships**: Select two nodes and choose relationship type
-- **Delete Relationships**: Right-click on relationship lines
-- **Edit People**: Use the People tab to modify person details
+- **Frontend**: React 18, TypeScript, Vite
+- **UI**: shadcn/ui, Tailwind CSS, Lucide icons
+- **Visualization**: D3.js v7
+- **Backend** (optional): Supabase (Postgres + Auth + RLS)
+- **Deployment**: Docker or Vercel
 
-### 4. Exporting Your Data
-- **Export as PNG**: Capture the current view as a high-resolution image
-- **Export as CSV**: Download your family data for backup
-
-## 🛠️ Technical Stack
-
-- **Frontend**: React 18 + TypeScript + Vite
-- **UI Components**: shadcn/ui + Tailwind CSS
-- **Visualization**: D3.js for network graphs
-- **Data Export**: html2canvas for image capture
-- **Containerization**: Docker with multi-stage builds
-- **Deployment**: Vercel-ready static build
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 src/
-├── components/          # React components
-│   ├── D3NetworkGraph.tsx    # Main network visualization
-│   ├── DataUpload.tsx        # CSV import/export
-│   ├── PersonForm.tsx        # Person management
-│   └── ui/                   # shadcn/ui components
-├── hooks/               # Custom React hooks
-├── pages/               # Page components
-├── types/               # TypeScript type definitions
-└── lib/                 # Utility functions
+  pages/Index.tsx              — Main page (Tree, People, Relationships, Review Queue)
+  contexts/AuthContext.tsx      — Auth state and role management
+  components/
+    D3NetworkGraph.tsx         — Primary visualization with filters, detail panel, export
+    AuthGate.tsx               — Login screen
+    ReviewQueue.tsx            — Admin approval queue
+    PersonForm.tsx             — Add/edit person
+    RelationshipManager.tsx    — Manage relationships
+  hooks/
+    useFamilyTree.ts           — localStorage data layer + inference engine
+    useSupabaseData.ts         — Supabase data layer + approval workflow
+  lib/
+    supabase.ts                — Supabase client
+    relationshipGraph.ts       — Graph algorithms, BFS path-finding
+  types/family.ts              — All TypeScript interfaces
+  data/testFamilyData.ts       — 15-person test family (4 generations)
+supabase/
+  schema.sql                   — Database schema with RLS policies
 ```
 
-## 🎨 Customization
+## Test Data
 
-The app uses a genealogy-themed color scheme with:
-- Primary: `#8B4513` (Saddle Brown)
-- Secondary: `#D2691E` (Chocolate)
-- Accent colors for different relationship types
+The included test dataset is a 4-generation Tamil family with 15 people and 24 direct relationships. After inference, it produces siblings, cousins, grandparents, aunts/uncles, and in-laws — useful for testing all visualization features.
 
-## 🤝 Contributing
+## License
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
-
-## 📄 License
-
-MIT License - see LICENSE file for details
-
-## 🙏 Acknowledgments
-
-- Built with [D3.js](https://d3js.org/) for powerful data visualization
-- UI components from [shadcn/ui](https://ui.shadcn.com/)
-- Icons from [Lucide React](https://lucide.dev/)
-- Styling with [Tailwind CSS](https://tailwindcss.com/)
-
----
-
-**Discover your family connections like never before with Kindred Weave Explorer!** 🌳
+MIT

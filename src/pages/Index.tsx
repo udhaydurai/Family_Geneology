@@ -1,162 +1,108 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { useFamilyTree } from '@/hooks/useFamilyTree';
-import { FamilyTreeVisualization } from '@/components/FamilyTreeVisualization';
 import { PersonForm } from '@/components/PersonForm';
 import { RelationshipManager } from '@/components/RelationshipManager';
-import { DataUpload } from '@/components/DataUpload';
-import { Person, Relationship, RelationshipType } from '@/types/family';
-import { ValidationDisplay } from '@/components/ValidationDisplay';
-import { AdvancedRelationshipExplorer } from '@/components/AdvancedRelationshipExplorer';
-import { 
-  Users, 
-  Plus, 
-  Upload, 
-  Download, 
-  Search, 
+import { ReviewQueue } from '@/components/ReviewQueue';
+import { D3NetworkGraph } from '@/components/D3NetworkGraph';
+import { Person, RelationshipType } from '@/types/family';
+import { useAuth } from '@/contexts/AuthContext';
+import { isSupabaseConfigured } from '@/lib/supabase';
+import { useFamilyTree } from '@/hooks/useFamilyTree';
+import { useSupabaseData } from '@/hooks/useSupabaseData';
+import { testPeople, testRelationships } from '@/data/testFamilyData';
+import {
+  Users,
+  Plus,
+  LogOut,
+  Database,
   Brain,
-  Eye,
-  EyeOff,
-  Filter,
-  Settings
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { D3NetworkGraph } from '@/components/D3NetworkGraph';
 
 const Index = () => {
-  console.log('Index component rendering...'); // Debug log
-  
-  const {
-    people,
-    relationships,
-    rootPersonId,
-    treeData,
-    validationErrors,
-    filters,
-    viewSettings,
-    addPerson,
-    updatePerson,
-    deletePerson,
-    addRelationship,
-    deleteRelationship,
-    inferRelationships,
-    validateRelationships,
-    setRootPerson,
-    updateFilters,
-    updateViewSettings,
-    findRelationshipPath,
-    getRelationshipLabelBetween,
-    getCousins,
-    getAuntsAndUncles,
-    getNiecesAndNephews,
-    getGrandparents,
-    getGrandchildren,
-    getInLaws,
-    setPeople
-  } = useFamilyTree();
+  const { user, isAdmin, signOut, isAuthenticated } = useAuth();
+  const localTree = useFamilyTree();
+  const supabaseData = useSupabaseData();
+  const { toast } = useToast();
 
-  console.log('useFamilyTree hook loaded, people:', people.length, 'relationships:', relationships.length); // Debug log
+  const useCloud = isSupabaseConfigured && isAuthenticated;
+  const people = useCloud ? supabaseData.people : localTree.people;
+  const relationships = useCloud ? supabaseData.relationships : localTree.relationships;
+  const pendingChanges = useCloud ? supabaseData.pendingChanges : [];
+
+  const addPerson = useCloud ? supabaseData.addPerson : async (p: Omit<Person, 'id'>) => localTree.addPerson(p);
+  const updatePerson = useCloud ? supabaseData.updatePerson : async (id: string, u: Partial<Person>) => localTree.updatePerson(id, u);
+  const deletePerson = useCloud ? supabaseData.deletePerson : async (id: string) => localTree.deletePerson(id);
+  const addRelationship = useCloud
+    ? supabaseData.addRelationship
+    : async (a: string, b: string, t: RelationshipType) => localTree.addRelationship(a, b, t);
+  const deleteRelationship = useCloud
+    ? supabaseData.deleteRelationship
+    : async (id: string) => localTree.deleteRelationship(id);
 
   const [activeTab, setActiveTab] = useState('tree');
   const [showPersonForm, setShowPersonForm] = useState(false);
   const [editingPerson, setEditingPerson] = useState<Person | null>(null);
-  const [showFilters, setShowFilters] = useState(false);
-  const { toast } = useToast();
 
-  const handleAddPerson = (personData: Omit<Person, 'id'>) => {
-    const personId = addPerson(personData);
+  const handleAddPerson = async (personData: Omit<Person, 'id'>) => {
+    await addPerson(personData);
     setShowPersonForm(false);
-    
-    if (!rootPersonId) {
-      setRootPerson(personId);
-    }
-    
-    toast({
-      title: "Person Added",
-      description: `${personData.name} has been added to your family tree`
-    });
+    toast({ title: 'Person Added', description: `${personData.name} has been added.` });
   };
 
-  const handleEditPerson = (personData: Omit<Person, 'id'>) => {
+  const handleEditPerson = async (personData: Omit<Person, 'id'>) => {
     if (editingPerson) {
-      updatePerson(editingPerson.id, personData);
+      await updatePerson(editingPerson.id, personData);
       setEditingPerson(null);
-      toast({
-        title: "Person Updated",
-        description: `${personData.name} has been updated`
-      });
+      toast({ title: 'Person Updated', description: `${personData.name} has been updated.` });
     }
-  };
-
-  const handleNodeClick = (personId: string) => {
-    setRootPerson(personId);
-    toast({
-      title: "Root Changed",
-      description: "Family tree centered on new person"
-    });
   };
 
   const handleNodeEdit = (personId: string) => {
     const person = people.find(p => p.id === personId);
-    if (person) {
-      setEditingPerson(person);
-    }
+    if (person) setEditingPerson(person);
   };
 
-  const handleImportPeople = (importedPeople: Person[]) => {
-    if (typeof setPeople === 'function') {
-      setPeople(importedPeople);
-    } else {
-      importedPeople.forEach(person => {
-        addPerson(person);
-      });
-    }
-    if (!rootPersonId && importedPeople.length > 0) {
-      setRootPerson(importedPeople[0].id);
-    }
+  const handleAddRelationship = async (personId: string, relatedPersonId: string, type: RelationshipType) => {
+    await addRelationship(personId, relatedPersonId, type);
+    toast({ title: 'Relationship Added', description: 'New relationship has been established.' });
   };
 
-  const handleImportRelationships = (importedRelationships: Relationship[]) => {
-    importedRelationships.forEach(relationship => {
-      addRelationship(relationship.personId, relationship.relatedPersonId, relationship.relationshipType);
-    });
+  const handleDeleteRelationship = async (relationshipId: string) => {
+    await deleteRelationship(relationshipId);
+    toast({ title: 'Relationship Removed', description: 'The relationship has been deleted.' });
   };
 
   const handleInferRelationships = () => {
-    inferRelationships();
-    validateRelationships();
-    toast({
-      title: "Relationships Inferred",
-      description: "AI has analyzed and added new relationships based on existing data"
-    });
+    if (!useCloud) {
+      localTree.inferRelationships();
+      localTree.validateRelationships();
+    }
+    toast({ title: 'Relationships Inferred', description: 'New relationships added based on existing data.' });
   };
 
-  const handleAddRelationship = (personId: string, relatedPersonId: string, relationshipType: RelationshipType) => {
-    addRelationship(personId, relatedPersonId, relationshipType);
-    toast({
-      title: "Relationship Added",
-      description: "New relationship has been established"
-    });
+  const handleLoadTestData = () => {
+    if (!useCloud) {
+      localTree.loadData(testPeople, testRelationships);
+      // Auto-infer after a tick so state has settled
+      setTimeout(() => {
+        localTree.inferRelationships();
+      }, 50);
+      toast({ title: 'Test Data Loaded', description: `${testPeople.length} people and ${testRelationships.length} relationships loaded. Inferring additional relationships...` });
+    }
   };
 
-  const handleDeleteRelationship = (relationshipId: string) => {
-    deleteRelationship(relationshipId);
-    toast({
-      title: "Relationship Removed",
-      description: "The relationship has been deleted"
-    });
-  };
+  const showReviewTab = isAdmin && useCloud;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-100">
       {/* Header */}
       <header className="bg-white/80 backdrop-blur-sm border-b border-purple-100 sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4">
+        <div className="container mx-auto px-4 py-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
               <div className="p-2 bg-royal-gradient rounded-lg">
@@ -164,116 +110,118 @@ const Index = () => {
               </div>
               <div>
                 <h1 className="text-2xl font-bold bg-royal-gradient bg-clip-text text-transparent">
-                  Family Tree Builder
+                  Family Tree
                 </h1>
                 <p className="text-sm text-muted-foreground">
-                  Intelligent genealogy with AI-powered relationship inference
+                  {useCloud
+                    ? `${user?.email ?? ''} (${isAdmin ? 'Admin' : 'Contributor'})`
+                    : 'Local mode'}
                 </p>
               </div>
             </div>
-            
+
             <div className="flex items-center space-x-2">
               {people.length > 0 && (
                 <Badge variant="secondary" className="bg-genealogy-primary/10 text-genealogy-primary">
-                  {people.length} People • {relationships.length} Relationships
+                  {people.length} People &middot; {relationships.length} Relationships
                 </Badge>
               )}
-              
-              {validationErrors.length > 0 && (
-                <Badge variant="destructive">
-                  {validationErrors.length} Issues
-                </Badge>
+              {pendingChanges.length > 0 && isAdmin && (
+                <Badge variant="destructive">{pendingChanges.length} Pending</Badge>
               )}
-              {/* Version/timestamp for build validation */}
-              <span className="text-xs text-gray-400 ml-4">Build: {new Date().toLocaleString()}</span>
+              {!useCloud && (
+                <Button variant="outline" size="sm" onClick={handleLoadTestData}>
+                  <Database className="w-4 h-4 mr-1" />
+                  Load Test Data
+                </Button>
+              )}
+              {!useCloud && people.length > 0 && (
+                <Button variant="outline" size="sm" onClick={handleInferRelationships}>
+                  <Brain className="w-4 h-4 mr-1" />
+                  Infer
+                </Button>
+              )}
+              {isAuthenticated && (
+                <Button variant="ghost" size="sm" onClick={signOut}>
+                  <LogOut className="w-4 h-4 mr-1" />
+                  Sign Out
+                </Button>
+              )}
             </div>
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="container mx-auto px-4 py-8">
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-5 bg-white/50 backdrop-blur-sm">
+      <main className="container mx-auto px-4 py-6">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+          <TabsList className="bg-white/50 backdrop-blur-sm">
             <TabsTrigger value="tree" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
-              🌳 Tree View
+              Tree View
             </TabsTrigger>
             <TabsTrigger value="people" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
-              👥 People
+              People
             </TabsTrigger>
             <TabsTrigger value="relationships" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
-              🔗 Relationships
+              Relationships
             </TabsTrigger>
-            <TabsTrigger value="data" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
-              📊 Data Import/Export
-            </TabsTrigger>
+            {showReviewTab && (
+              <TabsTrigger value="review" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
+                Review
+                {pendingChanges.length > 0 && (
+                  <Badge variant="destructive" className="ml-2 h-5 px-1.5 text-xs">{pendingChanges.length}</Badge>
+                )}
+              </TabsTrigger>
+            )}
           </TabsList>
 
-          {/* Tree View Tab */}
-          <TabsContent value="tree" className="space-y-6">
+          {/* Tree View */}
+          <TabsContent value="tree">
             <Card className="bg-white/70 backdrop-blur-sm">
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between mb-6">
-                  <div className="flex items-center space-x-4">
-                    <h2 className="text-xl font-semibold">Family Network Graph</h2>
-                  </div>
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-lg font-semibold">Family Network</h2>
+                  <Button onClick={() => setShowPersonForm(true)} className="bg-royal-gradient hover:opacity-90" size="sm">
+                    <Plus className="w-4 h-4 mr-1" /> Add Person
+                  </Button>
                 </div>
                 <div className="bg-white rounded-lg border overflow-hidden" style={{ height: '700px' }}>
-                  {(() => {
-                    try {
-                      return (
-                        <D3NetworkGraph
-                          people={people}
-                          relationships={relationships}
-                          onDeleteRelationship={handleDeleteRelationship}
-                          onAddRelationship={handleAddRelationship}
-                        />
-                      );
-                    } catch (error) {
-                      console.error('Error rendering D3NetworkGraph:', error);
-                      return (
-                        <div className="w-full h-full flex items-center justify-center bg-red-50">
-                          <div className="text-center">
-                            <h3 className="text-lg font-semibold mb-2 text-red-600">Error Loading Family Network</h3>
-                            <p className="text-red-500 mb-2">People: {people.length}, Relationships: {relationships.length}</p>
-                            <p className="text-sm text-gray-600">Error: {error instanceof Error ? error.message : String(error)}</p>
-                          </div>
-                        </div>
-                      );
-                    }
-                  })()}
+                  <D3NetworkGraph
+                    people={people}
+                    relationships={relationships}
+                    onDeleteRelationship={handleDeleteRelationship}
+                    onAddRelationship={handleAddRelationship}
+                  />
                 </div>
               </CardContent>
             </Card>
           </TabsContent>
 
-          {/* People Tab */}
-          <TabsContent value="people" className="space-y-6">
+          {/* People */}
+          <TabsContent value="people">
             <Card className="bg-white/70 backdrop-blur-sm">
               <CardContent className="p-6">
                 <div className="flex items-center justify-between mb-6">
                   <h2 className="text-xl font-semibold">Family Members</h2>
-                  <Button 
-                    onClick={() => setShowPersonForm(true)}
-                    className="bg-royal-gradient hover:opacity-90"
-                  >
-                    <Plus className="w-4 h-4 mr-2" />
-                    Add Person
+                  <Button onClick={() => setShowPersonForm(true)} className="bg-royal-gradient hover:opacity-90">
+                    <Plus className="w-4 h-4 mr-2" /> Add Person
                   </Button>
                 </div>
 
                 {people.length === 0 ? (
                   <div className="text-center py-12">
-                    <div className="text-6xl mb-4">👨‍👩‍👧‍👦</div>
                     <h3 className="text-lg font-semibold mb-2">No Family Members Yet</h3>
-                    <p className="text-muted-foreground mb-4">Start building your family tree by adding people</p>
-                    <Button 
-                      onClick={() => setShowPersonForm(true)}
-                      className="bg-royal-gradient hover:opacity-90"
-                    >
-                      <Plus className="w-4 h-4 mr-2" />
-                      Add First Person
-                    </Button>
+                    <p className="text-muted-foreground mb-4">Start by adding people or loading test data</p>
+                    <div className="flex gap-3 justify-center">
+                      <Button onClick={() => setShowPersonForm(true)} className="bg-royal-gradient hover:opacity-90">
+                        <Plus className="w-4 h-4 mr-2" /> Add First Person
+                      </Button>
+                      {!useCloud && (
+                        <Button variant="outline" onClick={handleLoadTestData}>
+                          <Database className="w-4 h-4 mr-2" /> Load Test Data
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -281,35 +229,27 @@ const Index = () => {
                       <Card key={person.id} className="hover:shadow-md transition-shadow">
                         <CardContent className="p-4">
                           <div className="flex items-center space-x-3 mb-3">
-                            <div className="w-10 h-10 bg-genealogy-primary/10 rounded-full flex items-center justify-center">
+                            <div className={`w-10 h-10 rounded-full flex items-center justify-center font-medium text-white ${
+                              person.isDeceased ? 'bg-gray-400' :
+                              person.gender === 'male' ? 'bg-blue-500' :
+                              person.gender === 'female' ? 'bg-pink-500' : 'bg-purple-500'
+                            }`}>
                               {person.name.charAt(0).toUpperCase()}
                             </div>
                             <div className="flex-1">
                               <h3 className="font-medium">{person.name}</h3>
-                              <p className="text-sm text-muted-foreground capitalize">{person.gender}</p>
+                              <p className="text-sm text-muted-foreground capitalize">
+                                {person.gender}
+                                {person.isDeceased && ' · Deceased'}
+                              </p>
                             </div>
                           </div>
-                          
                           <div className="flex justify-between items-center">
-                            <Badge variant="outline">
-                              {person.birthDate ? new Date(person.birthDate).getFullYear() : 'Not set'}
-                            </Badge>
-                            <div className="flex space-x-1">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setRootPerson(person.id)}
-                              >
-                                View Tree
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleNodeEdit(person.id)}
-                              >
-                                Edit
-                              </Button>
+                            <div className="text-xs text-muted-foreground">
+                              {person.birthDate && `b. ${new Date(person.birthDate).getFullYear()}`}
+                              {person.birthPlace && ` · ${person.birthPlace}`}
                             </div>
+                            <Button variant="ghost" size="sm" onClick={() => handleNodeEdit(person.id)}>Edit</Button>
                           </div>
                         </CardContent>
                       </Card>
@@ -320,8 +260,8 @@ const Index = () => {
             </Card>
           </TabsContent>
 
-          {/* Relationships Tab */}
-          <TabsContent value="relationships" className="space-y-6">
+          {/* Relationships */}
+          <TabsContent value="relationships">
             <RelationshipManager
               people={people}
               relationships={relationships}
@@ -329,55 +269,18 @@ const Index = () => {
               onDeleteRelationship={handleDeleteRelationship}
               onInferRelationships={handleInferRelationships}
             />
-            
-            <AdvancedRelationshipExplorer
-              people={people}
-              findRelationshipPath={findRelationshipPath}
-              getRelationshipLabelBetween={getRelationshipLabelBetween}
-              getCousins={getCousins}
-              getAuntsAndUncles={getAuntsAndUncles}
-              getNiecesAndNephews={getNiecesAndNephews}
-              getGrandparents={getGrandparents}
-              getGrandchildren={getGrandchildren}
-              getInLaws={getInLaws}
-            />
-            
-            {/* Validation Display */}
-            {validationErrors.length > 0 && (
-              <Card className="bg-white/70 backdrop-blur-sm">
-                <CardContent className="p-6">
-                  <ValidationDisplay
-                    errors={validationErrors}
-                    onDismiss={(errorId) => {
-                      // For now, just show a toast - in a real app, you'd want to persist dismissed errors
-                      toast({
-                        title: "Error Dismissed",
-                        description: "Validation error has been dismissed"
-                      });
-                    }}
-                    onFixError={(error) => {
-                      // Handle fixing specific errors
-                      toast({
-                        title: "Fix Error",
-                        description: `Attempting to fix: ${error.message}`
-                      });
-                    }}
-                  />
-                </CardContent>
-              </Card>
-            )}
           </TabsContent>
 
-          {/* Data Import/Export Tab */}
-          <TabsContent value="data" className="space-y-6">
-            <DataUpload
-              people={people}
-              relationships={relationships}
-              onImportPeople={handleImportPeople}
-              onImportRelationships={handleImportRelationships}
-              onExportData={() => {}}
-            />
-          </TabsContent>
+          {/* Review Queue (Admin only) */}
+          {showReviewTab && (
+            <TabsContent value="review">
+              <ReviewQueue
+                pendingChanges={pendingChanges}
+                onApprove={supabaseData.approveChange}
+                onReject={supabaseData.rejectChange}
+              />
+            </TabsContent>
+          )}
         </Tabs>
       </main>
 
@@ -388,17 +291,12 @@ const Index = () => {
       }}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>
-              {editingPerson ? 'Edit Person' : 'Add New Person'}
-            </DialogTitle>
+            <DialogTitle>{editingPerson ? 'Edit Person' : 'Add New Person'}</DialogTitle>
           </DialogHeader>
           <PersonForm
             person={editingPerson || undefined}
             onSubmit={editingPerson ? handleEditPerson : handleAddPerson}
-            onCancel={() => {
-              setShowPersonForm(false);
-              setEditingPerson(null);
-            }}
+            onCancel={() => { setShowPersonForm(false); setEditingPerson(null); }}
           />
         </DialogContent>
       </Dialog>
