@@ -6,9 +6,10 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { PersonForm } from '@/components/PersonForm';
 import { RelationshipManager } from '@/components/RelationshipManager';
+import { DataUpload } from '@/components/DataUpload';
 import { ReviewQueue } from '@/components/ReviewQueue';
 import { D3NetworkGraph } from '@/components/D3NetworkGraph';
-import { Person, RelationshipType } from '@/types/family';
+import { Person, Relationship, RelationshipType } from '@/types/family';
 import { useAuth } from '@/contexts/AuthContext';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import { useFamilyTree } from '@/hooks/useFamilyTree';
@@ -75,6 +76,21 @@ const Index = () => {
   const handleDeleteRelationship = async (relationshipId: string) => {
     await deleteRelationship(relationshipId);
     toast({ title: 'Relationship Removed', description: 'The relationship has been deleted.' });
+  };
+
+  const handleImportPeople = (importedPeople: Person[]) => {
+    if (!useCloud) {
+      localTree.setPeople([...people, ...importedPeople]);
+      toast({ title: 'People Imported', description: `${importedPeople.length} people added.` });
+    }
+  };
+
+  const handleImportRelationships = (importedRels: Relationship[]) => {
+    if (!useCloud) {
+      importedRels.forEach(r => localTree.addRelationship(r.personId, r.relatedPersonId, r.relationshipType));
+      setTimeout(() => localTree.inferRelationships(), 100);
+      toast({ title: 'Relationships Imported', description: `${importedRels.length} relationships added. Inferring more...` });
+    }
   };
 
   const handleInferRelationships = () => {
@@ -164,6 +180,9 @@ const Index = () => {
             </TabsTrigger>
             <TabsTrigger value="relationships" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
               Relationships
+            </TabsTrigger>
+            <TabsTrigger value="import" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
+              Import
             </TabsTrigger>
             {showReviewTab && (
               <TabsTrigger value="review" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
@@ -268,6 +287,17 @@ const Index = () => {
               onAddRelationship={handleAddRelationship}
               onDeleteRelationship={handleDeleteRelationship}
               onInferRelationships={handleInferRelationships}
+            />
+          </TabsContent>
+
+          {/* Import */}
+          <TabsContent value="import">
+            <DataUpload
+              people={people}
+              relationships={relationships}
+              onImportPeople={handleImportPeople}
+              onImportRelationships={handleImportRelationships}
+              onExportData={() => {}}
             />
           </TabsContent>
 
