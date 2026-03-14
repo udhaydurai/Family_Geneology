@@ -144,9 +144,9 @@ function computeHierarchicalLayout(
   centerX: number,
   centerY: number
 ): Record<string, HierPos> {
-  const ROW_SPACING = 200;
-  const UNIT_WIDTH = 160;
-  const SPOUSE_GAP = 100;
+  const ROW_SPACING = 240;
+  const UNIT_WIDTH = 240;
+  const SPOUSE_GAP = 120;
 
   // Build adjacency
   const parentsOf = new Map<string, string[]>();
@@ -226,12 +226,13 @@ function computeHierarchicalLayout(
     });
 
     // Calculate total row width
-    const totalWidth = units.length * UNIT_WIDTH + (units.length - 1) * 40;
+    const GAP = 60;
+    const totalWidth = units.length * UNIT_WIDTH + (units.length - 1) * GAP;
     const startX = centerX - totalWidth / 2;
     const rowY = centerY + gen * ROW_SPACING;
 
     units.forEach((unit, i) => {
-      const unitCenterX = startX + i * (UNIT_WIDTH + 40) + UNIT_WIDTH / 2;
+      const unitCenterX = startX + i * (UNIT_WIDTH + GAP) + UNIT_WIDTH / 2;
       if (unit.spouse) {
         positions[unit.primary] = { x: unitCenterX - SPOUSE_GAP / 2, y: rowY, gen };
         positions[unit.spouse] = { x: unitCenterX + SPOUSE_GAP / 2, y: rowY, gen };
@@ -455,28 +456,32 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     const node = g.append('g').attr('class', 'nodes')
       .selectAll('g').data(nodes).enter().append('g')
       .style('cursor', 'pointer')
-      .call(d3.drag<any, any>()
-        .on('start', (event, d) => {
+      .call(d3.drag<SVGGElement, any>()
+        .on('start', function (event, d) {
           if (layoutModeRef.current === 'force') {
             if (!event.active) simulationRef.current?.alphaTarget(0.3).restart();
           }
           d.fx = d.x; d.fy = d.y;
         })
-        .on('drag', (event, d) => {
+        .on('drag', function (event, d) {
+          d.x = event.x; d.y = event.y;
           d.fx = event.x; d.fy = event.y;
+          // Move this node group
+          d3.select(this).attr('transform', `translate(${d.x},${d.y})`);
           if (layoutModeRef.current === 'hierarchical') {
-            d.x = event.x; d.y = event.y;
-            d3.select(event.sourceEvent.target.closest('g')).attr('transform', `translate(${d.x},${d.y})`);
+            // Redraw all links and labels to follow
             link.attr('d', computeLinkPath);
-            const lp = computeLinkLabelPos;
-            linkLabels.attr('x', (dd: any) => lp(dd).x).attr('y', (dd: any) => lp(dd).y);
+            linkLabels.attr('x', (dd: any) => computeLinkLabelPos(dd).x).attr('y', (dd: any) => computeLinkLabelPos(dd).y);
           }
         })
-        .on('end', (event, d) => {
+        .on('end', function (event, d) {
           if (layoutModeRef.current === 'force') {
             if (!event.active) simulationRef.current?.alphaTarget(0);
+            // Unpin so simulation can settle naturally
+            d.fx = null; d.fy = null;
           }
-          d.fx = event.x; d.fy = event.y;
+          // In hierarchical mode, keep pinned at dragged position
+          // (fx/fy already set from 'drag' handler)
         })
       );
 
