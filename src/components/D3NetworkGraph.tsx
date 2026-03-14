@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as d3 from 'd3';
 import { Person, Relationship, RelationshipType } from '@/types/family';
 import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Download, Search, X, Printer, FileDown } from 'lucide-react';
@@ -25,7 +25,7 @@ interface SelectedPersonInfo {
   relationships: Array<{ type: string; name: string; personId: string }>;
 }
 
-// ── Relationship categories for filtering ──
+// ── Relationship categories ──
 type RelCategory = 'parent_child' | 'spouse' | 'sibling' | 'grandparent' | 'aunt_uncle' | 'cousin' | 'in_law';
 
 const REL_CATEGORIES: { key: RelCategory; label: string; types: string[]; color: string; dash: string }[] = [
@@ -38,7 +38,7 @@ const REL_CATEGORIES: { key: RelCategory; label: string; types: string[]; color:
   { key: 'in_law', label: 'In-law', types: ['in-law'], color: '#a3a3a3', dash: '2,4' },
 ];
 
-const NODE_COLORS = {
+const NODE_COLORS: Record<string, string> = {
   male: '#3b82f6',
   female: '#ec4899',
   other: '#8b5cf6',
@@ -46,52 +46,6 @@ const NODE_COLORS = {
 };
 
 const getCategoryForType = (type: string) => REL_CATEGORIES.find(c => c.types.includes(type));
-
-// ── Generation assignment via BFS from roots ──
-function assignGenerations(people: Person[], relationships: Relationship[]): Record<string, number> {
-  const generations: Record<string, number> = {};
-  const parentOf = new Map<string, string[]>();
-  const childOf = new Map<string, string[]>();
-
-  relationships.forEach(r => {
-    if (r.relationshipType === 'parent') {
-      if (!childOf.has(r.personId)) childOf.set(r.personId, []);
-      childOf.get(r.personId)!.push(r.relatedPersonId);
-      if (!parentOf.has(r.relatedPersonId)) parentOf.set(r.relatedPersonId, []);
-      parentOf.get(r.relatedPersonId)!.push(r.personId);
-    } else if (r.relationshipType === 'child') {
-      if (!childOf.has(r.relatedPersonId)) childOf.set(r.relatedPersonId, []);
-      childOf.get(r.relatedPersonId)!.push(r.personId);
-      if (!parentOf.has(r.personId)) parentOf.set(r.personId, []);
-      parentOf.get(r.personId)!.push(r.relatedPersonId);
-    }
-  });
-
-  const roots = people.filter(p => !parentOf.has(p.id) || parentOf.get(p.id)!.length === 0);
-  const queue: { id: string; gen: number }[] = roots.map(r => ({ id: r.id, gen: 0 }));
-  const visited = new Set<string>();
-
-  while (queue.length > 0) {
-    const { id, gen } = queue.shift()!;
-    if (visited.has(id)) continue;
-    visited.add(id);
-    generations[id] = gen;
-
-    relationships.forEach(r => {
-      if (r.relationshipType === 'spouse') {
-        const spouseId = r.personId === id ? r.relatedPersonId : (r.relatedPersonId === id ? r.personId : null);
-        if (spouseId && !visited.has(spouseId)) queue.unshift({ id: spouseId, gen });
-      }
-    });
-
-    (childOf.get(id) ?? []).forEach(childId => {
-      if (!visited.has(childId)) queue.push({ id: childId, gen: gen + 1 });
-    });
-  }
-
-  people.forEach(p => { if (!(p.id in generations)) generations[p.id] = 0; });
-  return generations;
-}
 
 // ── Deduplicate links ──
 interface GraphLink {
@@ -105,7 +59,6 @@ interface GraphLink {
 function buildLinks(relationships: Relationship[]): GraphLink[] {
   const seen = new Set<string>();
   const links: GraphLink[] = [];
-
   relationships.forEach(rel => {
     if (rel.relationshipType === 'parent' || rel.relationshipType === 'child') {
       const parentId = rel.relationshipType === 'parent' ? rel.personId : rel.relatedPersonId;
@@ -120,34 +73,241 @@ function buildLinks(relationships: Relationship[]): GraphLink[] {
       if (!seen.has(key)) {
         seen.add(key);
         const cat = getCategoryForType(rel.relationshipType);
-        links.push({
-          source: rel.personId, target: rel.relatedPersonId,
-          type: rel.relationshipType, relId: rel.id,
-          category: cat?.key ?? 'in_law',
-        });
+        links.push({ source: rel.personId, target: rel.relatedPersonId, type: rel.relationshipType, relId: rel.id, category: cat?.key ?? 'in_law' });
       }
     }
   });
-
   return links;
 }
 
-// ── Spouse pair detection for horizontal layout ──
+// ── Force-layout generation assignment ──
+function assignGenerations(people: Person[], relationships: Relationship[]): Record<string, number> {
+  const generations: Record<string, number> = {};
+  const parentOf = new Map<string, string[]>();
+  const childOf = new Map<string, string[]>();
+  relationships.forEach(r => {
+    if (r.relationshipType === 'parent') {
+      if (!childOf.has(r.personId)) childOf.set(r.personId, []);
+      childOf.get(r.personId)!.push(r.relatedPersonId);
+      if (!parentOf.has(r.relatedPersonId)) parentOf.set(r.relatedPersonId, []);
+      parentOf.get(r.relatedPersonId)!.push(r.personId);
+    } else if (r.relationshipType === 'child') {
+      if (!childOf.has(r.relatedPersonId)) childOf.set(r.relatedPersonId, []);
+      childOf.get(r.relatedPersonId)!.push(r.personId);
+      if (!parentOf.has(r.personId)) parentOf.set(r.personId, []);
+      parentOf.get(r.personId)!.push(r.relatedPersonId);
+    }
+  });
+  const roots = people.filter(p => !parentOf.has(p.id) || parentOf.get(p.id)!.length === 0);
+  const queue: { id: string; gen: number }[] = roots.map(r => ({ id: r.id, gen: 0 }));
+  const visited = new Set<string>();
+  while (queue.length > 0) {
+    const { id, gen } = queue.shift()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    generations[id] = gen;
+    relationships.forEach(r => {
+      if (r.relationshipType === 'spouse') {
+        const sid = r.personId === id ? r.relatedPersonId : (r.relatedPersonId === id ? r.personId : null);
+        if (sid && !visited.has(sid)) queue.unshift({ id: sid, gen });
+      }
+    });
+    (childOf.get(id) ?? []).forEach(cid => { if (!visited.has(cid)) queue.push({ id: cid, gen: gen + 1 }); });
+  }
+  people.forEach(p => { if (!(p.id in generations)) generations[p.id] = 0; });
+  return generations;
+}
+
+// ── Spouse pair detection ──
 function getSpousePairs(relationships: Relationship[]): Map<string, string> {
   const pairs = new Map<string, string>();
   const seen = new Set<string>();
   relationships.forEach(r => {
     if (r.relationshipType === 'spouse') {
       const key = [r.personId, r.relatedPersonId].sort().join('-');
-      if (!seen.has(key)) {
-        seen.add(key);
-        pairs.set(r.personId, r.relatedPersonId);
-        pairs.set(r.relatedPersonId, r.personId);
-      }
+      if (!seen.has(key)) { seen.add(key); pairs.set(r.personId, r.relatedPersonId); pairs.set(r.relatedPersonId, r.personId); }
     }
   });
   return pairs;
 }
+
+// ══════════════════════════════════════════════════════════
+// ── HIERARCHICAL LAYOUT (the big new feature) ──
+// ══════════════════════════════════════════════════════════
+
+interface HierPos { x: number; y: number; gen: number }
+
+function computeHierarchicalLayout(
+  rootId: string,
+  people: Person[],
+  relationships: Relationship[],
+  centerX: number,
+  centerY: number
+): Record<string, HierPos> {
+  const ROW_SPACING = 200;
+  const UNIT_WIDTH = 160;
+  const SPOUSE_GAP = 100;
+
+  // Build adjacency
+  const parentsOf = new Map<string, string[]>();
+  const childrenOf = new Map<string, string[]>();
+  const spouseOf = new Map<string, string>();
+
+  relationships.forEach(r => {
+    if (r.relationshipType === 'parent') {
+      if (!childrenOf.has(r.personId)) childrenOf.set(r.personId, []);
+      childrenOf.get(r.personId)!.push(r.relatedPersonId);
+      if (!parentsOf.has(r.relatedPersonId)) parentsOf.set(r.relatedPersonId, []);
+      parentsOf.get(r.relatedPersonId)!.push(r.personId);
+    } else if (r.relationshipType === 'child') {
+      if (!childrenOf.has(r.relatedPersonId)) childrenOf.set(r.relatedPersonId, []);
+      childrenOf.get(r.relatedPersonId)!.push(r.personId);
+      if (!parentsOf.has(r.personId)) parentsOf.set(r.personId, []);
+      parentsOf.get(r.personId)!.push(r.relatedPersonId);
+    } else if (r.relationshipType === 'spouse') {
+      if (!spouseOf.has(r.personId)) spouseOf.set(r.personId, r.relatedPersonId);
+      if (!spouseOf.has(r.relatedPersonId)) spouseOf.set(r.relatedPersonId, r.personId);
+    }
+  });
+
+  // BFS from root to assign generations (root = gen 0, parents = -1, children = +1)
+  const genMap: Record<string, number> = {};
+  const visited = new Set<string>();
+  const bfsQueue: { id: string; gen: number }[] = [{ id: rootId, gen: 0 }];
+
+  while (bfsQueue.length > 0) {
+    const { id, gen } = bfsQueue.shift()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    genMap[id] = gen;
+
+    // Spouse same gen
+    const sp = spouseOf.get(id);
+    if (sp && !visited.has(sp)) bfsQueue.unshift({ id: sp, gen });
+
+    // Parents go up
+    (parentsOf.get(id) ?? []).forEach(pid => {
+      if (!visited.has(pid)) bfsQueue.push({ id: pid, gen: gen - 1 });
+    });
+
+    // Children go down
+    (childrenOf.get(id) ?? []).forEach(cid => {
+      if (!visited.has(cid)) bfsQueue.push({ id: cid, gen: gen + 1 });
+    });
+  }
+
+  // Group by generation
+  const genGroups = new Map<number, string[]>();
+  Object.entries(genMap).forEach(([id, gen]) => {
+    if (!genGroups.has(gen)) genGroups.set(gen, []);
+    genGroups.get(gen)!.push(id);
+  });
+
+  // Build "family units" per row: a unit = person + optional spouse (avoid placing spouse twice)
+  const placed = new Set<string>();
+  const positions: Record<string, HierPos> = {};
+
+  const sortedGens = Array.from(genGroups.keys()).sort((a, b) => a - b);
+
+  sortedGens.forEach(gen => {
+    const members = genGroups.get(gen)!;
+    const units: { primary: string; spouse: string | null }[] = [];
+
+    members.forEach(id => {
+      if (placed.has(id)) return;
+      placed.add(id);
+      const sp = spouseOf.get(id);
+      let spouseId: string | null = null;
+      if (sp && genMap[sp] === gen && !placed.has(sp)) {
+        spouseId = sp;
+        placed.add(sp);
+      }
+      units.push({ primary: id, spouse: spouseId });
+    });
+
+    // Calculate total row width
+    const totalWidth = units.length * UNIT_WIDTH + (units.length - 1) * 40;
+    const startX = centerX - totalWidth / 2;
+    const rowY = centerY + gen * ROW_SPACING;
+
+    units.forEach((unit, i) => {
+      const unitCenterX = startX + i * (UNIT_WIDTH + 40) + UNIT_WIDTH / 2;
+      if (unit.spouse) {
+        positions[unit.primary] = { x: unitCenterX - SPOUSE_GAP / 2, y: rowY, gen };
+        positions[unit.spouse] = { x: unitCenterX + SPOUSE_GAP / 2, y: rowY, gen };
+      } else {
+        positions[unit.primary] = { x: unitCenterX, y: rowY, gen };
+      }
+    });
+  });
+
+  // Second pass: center parent pairs above the midpoint of their children
+  sortedGens.forEach(gen => {
+    const members = genGroups.get(gen)!;
+    members.forEach(id => {
+      const children = (childrenOf.get(id) ?? []).filter(c => c in positions);
+      if (children.length === 0) return;
+      const childXs = children.map(c => positions[c].x);
+      const childMid = (Math.min(...childXs) + Math.max(...childXs)) / 2;
+      const sp = spouseOf.get(id);
+      if (sp && positions[sp] && genMap[sp] === gen) {
+        // Move the pair so their midpoint is above children midpoint
+        const pairMid = (positions[id].x + positions[sp].x) / 2;
+        const shift = childMid - pairMid;
+        positions[id].x += shift;
+        positions[sp].x += shift;
+      } else if (positions[id]) {
+        positions[id].x = childMid;
+      }
+    });
+  });
+
+  return positions;
+}
+
+// ── Path drawing (reusable for tick and hierarchical transitions) ──
+function computeLinkPath(d: any): string {
+  const sx = (d.source as any).x ?? d.source.x;
+  const sy = (d.source as any).y ?? d.source.y;
+  const tx = (d.target as any).x ?? d.target.x;
+  const ty = (d.target as any).y ?? d.target.y;
+
+  if (d.category === 'spouse') {
+    return `M${sx},${sy} L${tx},${ty}`;
+  }
+  if (d.category === 'parent_child') {
+    const my = (sy + ty) / 2;
+    return `M${sx},${sy} C${sx},${my} ${tx},${my} ${tx},${ty}`;
+  }
+  const dx = tx - sx;
+  const dy = ty - sy;
+  const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+  const bend = dist * 0.2;
+  const mx = (sx + tx) / 2 - (dy / dist) * bend;
+  const my = (sy + ty) / 2 + (dx / dist) * bend;
+  return `M${sx},${sy} Q${mx},${my} ${tx},${ty}`;
+}
+
+function computeLinkLabelPos(d: any): { x: number; y: number } {
+  const sx = (d.source as any).x ?? d.source.x;
+  const sy = (d.source as any).y ?? d.source.y;
+  const tx = (d.target as any).x ?? d.target.x;
+  const ty = (d.target as any).y ?? d.target.y;
+
+  const x = (sx + tx) / 2;
+  if (d.category === 'parent_child' || d.category === 'spouse') {
+    return { x, y: (sy + ty) / 2 - 6 };
+  }
+  const dx = tx - sx;
+  const dy = ty - sy;
+  const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+  const bend = dist * 0.2;
+  return { x, y: (sy + ty) / 2 + (dx / dist) * bend - 6 };
+}
+
+// ══════════════════════════════════════════════════════════
+// ── COMPONENT ──
+// ══════════════════════════════════════════════════════════
 
 export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
   people,
@@ -163,6 +323,13 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
   const gRef = useRef<SVGGElement | null>(null);
   const simulationRef = useRef<d3.Simulation<any, any> | null>(null);
 
+  // D3 selection refs (so click handlers can access them without re-render)
+  const nodeSelRef = useRef<d3.Selection<any, any, any, any> | null>(null);
+  const linkSelRef = useRef<d3.Selection<any, any, any, any> | null>(null);
+  const linkLabelSelRef = useRef<d3.Selection<any, any, any, any> | null>(null);
+  const layoutModeRef = useRef<'force' | 'hierarchical'>('force');
+  const isTransitioningRef = useRef(false);
+
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0 });
   const [exporting, setExporting] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -173,11 +340,8 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
   );
   const [showExportMenu, setShowExportMenu] = useState(false);
 
-  // Close menus on outside click
   useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      setContextMenu(prev => ({ ...prev, visible: false }));
-    };
+    const handler = () => setContextMenu(prev => ({ ...prev, visible: false }));
     document.addEventListener('click', handler);
     return () => document.removeEventListener('click', handler);
   }, []);
@@ -185,68 +349,57 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
   const toggleCategory = useCallback((cat: RelCategory) => {
     setVisibleCategories(prev => {
       const next = new Set(prev);
-      if (next.has(cat)) next.delete(cat);
-      else next.add(cat);
+      if (next.has(cat)) next.delete(cat); else next.add(cat);
       return next;
     });
   }, []);
 
-  // Build person relationships for the detail panel
   const getPersonRelationships = useCallback((personId: string): SelectedPersonInfo['relationships'] => {
     const rels: SelectedPersonInfo['relationships'] = [];
     const seen = new Set<string>();
-
     relationships.forEach(r => {
       if (r.personId === personId) {
         const key = `${r.relatedPersonId}-${r.relationshipType}`;
         if (!seen.has(key)) {
           seen.add(key);
-          const person = people.find(p => p.id === r.relatedPersonId);
-          if (person) {
-            rels.push({ type: r.relationshipType, name: person.name, personId: person.id });
-          }
+          const p = people.find(pp => pp.id === r.relatedPersonId);
+          if (p) rels.push({ type: r.relationshipType, name: p.name, personId: p.id });
         }
       } else if (r.relatedPersonId === personId) {
-        const reverseType = r.relationshipType === 'parent' ? 'child' :
-          r.relationshipType === 'child' ? 'parent' : r.relationshipType;
-        const key = `${r.personId}-${reverseType}`;
+        const rev = r.relationshipType === 'parent' ? 'child' : r.relationshipType === 'child' ? 'parent' : r.relationshipType;
+        const key = `${r.personId}-${rev}`;
         if (!seen.has(key)) {
           seen.add(key);
-          const person = people.find(p => p.id === r.personId);
-          if (person) {
-            rels.push({ type: reverseType, name: person.name, personId: person.id });
-          }
+          const p = people.find(pp => pp.id === r.personId);
+          if (p) rels.push({ type: rev, name: p.name, personId: p.id });
         }
       }
     });
-
-    // Sort: spouse first, then parents, children, siblings, others
     const order: Record<string, number> = { spouse: 0, parent: 1, child: 2, sibling: 3 };
     rels.sort((a, b) => (order[a.type] ?? 10) - (order[b.type] ?? 10));
     return rels;
   }, [people, relationships]);
 
-  // ── Main D3 render ──
+  // ══════════════════════════════════════════════════════════
+  // ── MAIN D3 RENDER ──
+  // ══════════════════════════════════════════════════════════
   useEffect(() => {
     if (!svgRef.current || people.length === 0) return;
 
     const svg = d3.select(svgRef.current);
     svg.selectAll('*').remove();
+    layoutModeRef.current = 'force';
 
     const nodes = people.map(p => ({ ...p }));
     const allLinks = buildLinks(relationships);
     const visibleLinks = allLinks.filter(l => visibleCategories.has(l.category));
     const generations = assignGenerations(people, relationships);
     const spousePairs = getSpousePairs(relationships);
-
-    // Count generations for spacing
-    const genValues = Object.values(generations);
-    const maxGen = Math.max(...genValues, 0);
+    const maxGen = Math.max(...Object.values(generations), 0);
     const genSpacing = Math.max(220, height / (maxGen + 2));
 
-    // ── SVG defs ──
-    const defs = svg.append('defs');
-    defs.html(`
+    // SVG defs
+    svg.append('defs').html(`
       <marker id="arrow-pc" viewBox="0 0 10 6" refX="38" refY="3" markerWidth="7" markerHeight="5" orient="auto">
         <path d="M0,0 L10,3 L0,6 Z" fill="#6366f1" opacity="0.6"/>
       </marker>
@@ -258,7 +411,6 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     const g = svg.append('g').attr('class', 'graph');
     gRef.current = g.node();
 
-    // Zoom
     const zoom = d3.zoom<SVGSVGElement, unknown>()
       .scaleExtent([0.1, 3])
       .on('zoom', (event) => g.attr('transform', event.transform));
@@ -267,14 +419,12 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
 
     // ── Links ──
     const linkGroup = g.append('g').attr('class', 'links');
-
     const link = linkGroup.selectAll('path.link-line')
-      .data(visibleLinks)
-      .enter().append('path')
+      .data(visibleLinks).enter().append('path')
       .attr('class', 'link-line')
       .attr('fill', 'none')
       .attr('stroke', d => getCategoryForType(d.type)?.color ?? '#a3a3a3')
-      .attr('stroke-width', d => d.category === 'parent_child' ? 2.5 : d.category === 'spouse' ? 2.5 : 1.8)
+      .attr('stroke-width', d => d.category === 'parent_child' || d.category === 'spouse' ? 2.5 : 1.8)
       .attr('stroke-dasharray', d => getCategoryForType(d.type)?.dash ?? '')
       .attr('opacity', 0.55)
       .attr('marker-end', d => d.category === 'parent_child' ? 'url(#arrow-pc)' : '')
@@ -289,169 +439,173 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
         if (rel) setContextMenu({ visible: true, x: event.clientX, y: event.clientY, relationship: rel });
       });
 
-    // Link labels (hidden by default, shown on hover/click)
     const linkLabels = linkGroup.selectAll('text.link-label')
-      .data(visibleLinks)
-      .enter().append('text')
+      .data(visibleLinks).enter().append('text')
       .attr('class', 'link-label')
-      .attr('font-size', '10px')
-      .attr('font-weight', '500')
+      .attr('font-size', '10px').attr('font-weight', '500')
       .attr('fill', d => getCategoryForType(d.type)?.color ?? '#666')
-      .attr('text-anchor', 'middle')
-      .attr('dy', -6)
-      .attr('opacity', 0) // hidden by default to reduce clutter
-      .text(d => {
-        const cat = getCategoryForType(d.type);
-        return cat?.label ?? d.type;
-      });
+      .attr('text-anchor', 'middle').attr('dy', -6).attr('opacity', 0)
+      .text(d => getCategoryForType(d.type)?.label ?? d.type);
+
+    linkSelRef.current = link;
+    linkLabelSelRef.current = linkLabels;
 
     // ── Nodes ──
     const nodeRadius = 30;
     const node = g.append('g').attr('class', 'nodes')
-      .selectAll('g')
-      .data(nodes)
-      .enter().append('g')
+      .selectAll('g').data(nodes).enter().append('g')
       .style('cursor', 'pointer')
       .call(d3.drag<any, any>()
         .on('start', (event, d) => {
-          if (!event.active) simulationRef.current?.alphaTarget(0.3).restart();
+          if (layoutModeRef.current === 'force') {
+            if (!event.active) simulationRef.current?.alphaTarget(0.3).restart();
+          }
           d.fx = d.x; d.fy = d.y;
         })
-        .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
+        .on('drag', (event, d) => {
+          d.fx = event.x; d.fy = event.y;
+          if (layoutModeRef.current === 'hierarchical') {
+            d.x = event.x; d.y = event.y;
+            d3.select(event.sourceEvent.target.closest('g')).attr('transform', `translate(${d.x},${d.y})`);
+            link.attr('d', computeLinkPath);
+            const lp = computeLinkLabelPos;
+            linkLabels.attr('x', (dd: any) => lp(dd).x).attr('y', (dd: any) => lp(dd).y);
+          }
+        })
         .on('end', (event, d) => {
-          if (!event.active) simulationRef.current?.alphaTarget(0);
+          if (layoutModeRef.current === 'force') {
+            if (!event.active) simulationRef.current?.alphaTarget(0);
+          }
           d.fx = event.x; d.fy = event.y;
         })
       );
 
-    // Outer glow ring for selected
-    node.append('circle')
-      .attr('class', 'select-ring')
-      .attr('r', nodeRadius + 5)
-      .attr('fill', 'none')
-      .attr('stroke', 'transparent')
-      .attr('stroke-width', 3);
-
-    // Main circle
-    node.append('circle')
-      .attr('class', 'main-circle')
-      .attr('r', nodeRadius)
-      .attr('fill', d => d.isDeceased ? NODE_COLORS.deceased : (NODE_COLORS as any)[d.gender] ?? NODE_COLORS.other)
-      .attr('stroke', '#fff')
-      .attr('stroke-width', 3)
-      .attr('filter', 'url(#shadow)');
-
-    // Deceased indicator
-    node.filter(d => !!d.isDeceased)
-      .append('line')
-      .attr('x1', -nodeRadius * 0.5).attr('y1', -nodeRadius * 0.5)
-      .attr('x2', nodeRadius * 0.5).attr('y2', nodeRadius * 0.5)
-      .attr('stroke', '#fff').attr('stroke-width', 2).attr('opacity', 0.4)
-      .attr('pointer-events', 'none');
-
-    // Initials
-    node.append('text')
-      .attr('text-anchor', 'middle')
-      .attr('dy', '0.38em')
-      .attr('font-size', '16px')
-      .attr('font-weight', '700')
-      .attr('fill', 'white')
-      .attr('pointer-events', 'none')
+    node.append('circle').attr('class', 'select-ring').attr('r', nodeRadius + 5).attr('fill', 'none').attr('stroke', 'transparent').attr('stroke-width', 3);
+    node.append('circle').attr('class', 'main-circle').attr('r', nodeRadius)
+      .attr('fill', d => d.isDeceased ? NODE_COLORS.deceased : NODE_COLORS[d.gender] ?? NODE_COLORS.other)
+      .attr('stroke', '#fff').attr('stroke-width', 3).attr('filter', 'url(#shadow)');
+    node.filter(d => !!d.isDeceased).append('line')
+      .attr('x1', -nodeRadius * 0.5).attr('y1', -nodeRadius * 0.5).attr('x2', nodeRadius * 0.5).attr('y2', nodeRadius * 0.5)
+      .attr('stroke', '#fff').attr('stroke-width', 2).attr('opacity', 0.4).attr('pointer-events', 'none');
+    node.append('text').attr('text-anchor', 'middle').attr('dy', '0.38em').attr('font-size', '16px').attr('font-weight', '700').attr('fill', 'white').attr('pointer-events', 'none')
       .text(d => d.name.split(' ').map((p: string) => p[0]).join('').toUpperCase().slice(0, 2));
+    node.append('text').attr('class', 'name-label').attr('y', nodeRadius + 16).attr('text-anchor', 'middle').attr('font-size', '12px').attr('font-weight', '600').attr('fill', '#1e293b').attr('pointer-events', 'none').text(d => d.name);
+    node.append('text').attr('y', nodeRadius + 29).attr('text-anchor', 'middle').attr('font-size', '10px').attr('fill', '#94a3b8').attr('pointer-events', 'none')
+      .text(d => { if (!d.birthDate) return ''; const y = new Date(d.birthDate).getFullYear(); if (d.isDeceased && d.deathDate) return `${y} - ${new Date(d.deathDate).getFullYear()}`; return `b. ${y}`; });
 
-    // Name label
-    node.append('text')
-      .attr('class', 'name-label')
-      .attr('y', nodeRadius + 16)
-      .attr('text-anchor', 'middle')
-      .attr('font-size', '12px')
-      .attr('font-weight', '600')
-      .attr('fill', '#1e293b')
-      .attr('pointer-events', 'none')
-      .text(d => d.name);
+    nodeSelRef.current = node;
 
-    // Years label
-    node.append('text')
-      .attr('y', nodeRadius + 29)
-      .attr('text-anchor', 'middle')
-      .attr('font-size', '10px')
-      .attr('fill', '#94a3b8')
-      .attr('pointer-events', 'none')
-      .text(d => {
-        if (!d.birthDate) return '';
-        const year = new Date(d.birthDate).getFullYear();
-        if (d.isDeceased && d.deathDate) return `${year} - ${new Date(d.deathDate).getFullYear()}`;
-        return `b. ${year}`;
-      });
-
-    // ── Click: select node, show relationships, highlight connected ──
+    // ── Click: hierarchical layout ──
     node.on('click', (event, d: any) => {
       event.stopPropagation();
-      const connectedIds = new Set<string>([d.id]);
-      const connectedLinkIndices = new Set<number>();
+      if (isTransitioningRef.current) return;
+      isTransitioningRef.current = true;
 
+      // Stop simulation
+      simulationRef.current?.stop();
+      layoutModeRef.current = 'hierarchical';
+
+      // Compute hierarchical positions
+      const hierPos = computeHierarchicalLayout(d.id, people, relationships, width / 2, height / 2);
+      const connectedIds = new Set(Object.keys(hierPos));
+
+      // Find connected link indices
+      const connectedLinkIndices = new Set<number>();
       visibleLinks.forEach((l, i) => {
         const sid = (l.source as any).id ?? l.source;
         const tid = (l.target as any).id ?? l.target;
-        if (sid === d.id || tid === d.id) {
-          connectedIds.add(sid);
-          connectedIds.add(tid);
-          connectedLinkIndices.add(i);
-        }
+        if (connectedIds.has(sid) && connectedIds.has(tid)) connectedLinkIndices.add(i);
       });
 
-      // Dim non-connected nodes
-      node.select('.main-circle')
-        .transition().duration(200)
-        .attr('opacity', (n: any) => connectedIds.has(n.id) ? 1 : 0.2);
-      node.select('.name-label')
-        .transition().duration(200)
-        .attr('opacity', (n: any) => connectedIds.has(n.id) ? 1 : 0.15);
+      const DURATION = 800;
+
+      // Animate nodes to hierarchical positions
+      node.transition().duration(DURATION).ease(d3.easeCubicInOut)
+        .attr('transform', (n: any) => {
+          const pos = hierPos[n.id];
+          if (pos) {
+            n.x = pos.x; n.y = pos.y; n.fx = pos.x; n.fy = pos.y;
+            return `translate(${pos.x},${pos.y})`;
+          }
+          // Non-connected: push far away
+          n.fx = n.x; n.fy = n.y;
+          return `translate(${n.x},${n.y})`;
+        });
+
+      // Animate links
+      link.transition().duration(DURATION).ease(d3.easeCubicInOut)
+        .attr('d', computeLinkPath)
+        .attr('opacity', (_l: any, i: number) => connectedLinkIndices.has(i) ? 0.7 : 0.04)
+        .attr('stroke-width', (_l: any, i: number) => connectedLinkIndices.has(i) ? 3 : 0.5);
+
+      // Animate link labels
+      linkLabels.transition().duration(DURATION).ease(d3.easeCubicInOut)
+        .attr('x', (dd: any) => computeLinkLabelPos(dd).x)
+        .attr('y', (dd: any) => computeLinkLabelPos(dd).y)
+        .attr('opacity', (_l: any, i: number) => connectedLinkIndices.has(i) ? 1 : 0)
+        .attr('font-size', (_l: any, i: number) => connectedLinkIndices.has(i) ? '11px' : '10px');
+
+      // Dim/highlight nodes
+      node.select('.main-circle').transition().duration(DURATION)
+        .attr('opacity', (n: any) => connectedIds.has(n.id) ? 1 : 0.12);
+      node.select('.name-label').transition().duration(DURATION)
+        .attr('opacity', (n: any) => connectedIds.has(n.id) ? 1 : 0.08);
       node.select('.select-ring')
         .attr('stroke', (n: any) => n.id === d.id ? '#fbbf24' : connectedIds.has(n.id) ? '#fbbf2480' : 'transparent');
 
-      // Highlight connected links, show their labels
-      link.transition().duration(200)
-        .attr('opacity', (l: any, i: number) => connectedLinkIndices.has(i) ? 0.9 : 0.06)
-        .attr('stroke-width', (l: any, i: number) => connectedLinkIndices.has(i) ? 3.5 : 1);
-      linkLabels.transition().duration(200)
-        .attr('opacity', (l: any, i: number) => connectedLinkIndices.has(i) ? 1 : 0)
-        .attr('font-size', (l: any, i: number) => connectedLinkIndices.has(i) ? '11px' : '10px');
-
-      // Show detail panel
+      // Detail panel
       const person = people.find(p => p.id === d.id);
       if (person) {
-        setSelectedPerson({
-          person,
-          relationships: getPersonRelationships(d.id),
-        });
+        setSelectedPerson({ person, relationships: getPersonRelationships(d.id) });
       }
+
+      // Fit to view after transition
+      setTimeout(() => {
+        fitToView();
+        isTransitioningRef.current = false;
+      }, DURATION + 100);
     });
 
-    // Click on background to deselect
+    // ── Background click: return to force layout ──
     svg.on('click', () => {
-      node.select('.main-circle').transition().duration(200).attr('opacity', 1);
-      node.select('.name-label').transition().duration(200).attr('opacity', 1);
-      node.select('.select-ring').attr('stroke', 'transparent');
-      link.transition().duration(200)
-        .attr('opacity', 0.55)
-        .attr('stroke-width', (d: any) => d.category === 'parent_child' ? 2.5 : d.category === 'spouse' ? 2.5 : 1.8);
-      linkLabels.transition().duration(200).attr('opacity', 0);
+      if (isTransitioningRef.current) return;
+
+      if (layoutModeRef.current === 'hierarchical') {
+        isTransitioningRef.current = true;
+        layoutModeRef.current = 'force';
+
+        // Unpin all nodes
+        nodes.forEach((n: any) => { n.fx = null; n.fy = null; });
+
+        // Reset visual state
+        node.select('.main-circle').transition().duration(400).attr('opacity', 1);
+        node.select('.name-label').transition().duration(400).attr('opacity', 1);
+        node.select('.select-ring').attr('stroke', 'transparent');
+        link.transition().duration(400)
+          .attr('opacity', 0.55)
+          .attr('stroke-width', (dd: any) => dd.category === 'parent_child' || dd.category === 'spouse' ? 2.5 : 1.8);
+        linkLabels.transition().duration(400).attr('opacity', 0);
+
+        // Restart simulation
+        simulationRef.current?.alpha(0.5).restart();
+
+        setTimeout(() => { isTransitioningRef.current = false; }, 500);
+      }
+
       setSelectedPerson(null);
     });
 
-    // Hover: subtle highlight without changing selection
-    node.on('mouseover', function (event, d: any) {
-      if (selectedPerson) return; // don't override click selection
-      const connectedIds = new Set<string>([d.id]);
+    // ── Hover ──
+    node.on('mouseover', function (_event, d: any) {
+      if (layoutModeRef.current === 'hierarchical') return;
+      const connIds = new Set<string>([d.id]);
       visibleLinks.forEach(l => {
         const sid = (l.source as any).id ?? l.source;
         const tid = (l.target as any).id ?? l.target;
-        if (sid === d.id) connectedIds.add(tid);
-        if (tid === d.id) connectedIds.add(sid);
+        if (sid === d.id) connIds.add(tid);
+        if (tid === d.id) connIds.add(sid);
       });
-      node.select('.main-circle')
-        .attr('opacity', (n: any) => connectedIds.has(n.id) ? 1 : 0.3);
+      node.select('.main-circle').attr('opacity', (n: any) => connIds.has(n.id) ? 1 : 0.3);
       link.attr('opacity', (l: any) => {
         const sid = (l.source as any).id ?? l.source;
         const tid = (l.target as any).id ?? l.target;
@@ -464,88 +618,47 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
       });
     })
     .on('mouseout', function () {
-      if (selectedPerson) return;
+      if (layoutModeRef.current === 'hierarchical') return;
       node.select('.main-circle').attr('opacity', 1);
       link.attr('opacity', 0.55);
       linkLabels.attr('opacity', 0);
     });
 
-    // ── Simulation ──
+    // ── Force simulation ──
     const simulation = d3.forceSimulation(nodes as any)
       .force('link', d3.forceLink(visibleLinks as any).id((d: any) => d.id).distance(200).strength(0.5))
       .force('charge', d3.forceManyBody().strength(-500))
       .force('center', d3.forceCenter(width / 2, height / 2).strength(0.02))
       .force('collide', d3.forceCollide(nodeRadius + 40))
-      // Vertical layering by generation
       .force('y', d3.forceY((d: any) => (generations[d.id] ?? 0) * genSpacing + genSpacing).strength(0.9))
-      // Gentle horizontal centering
       .force('x', d3.forceX((d: any) => {
-        // Pull spouses together
-        const spouseId = spousePairs.get(d.id);
-        if (spouseId) {
-          const spouseNode = nodes.find(n => n.id === spouseId);
-          if (spouseNode && (spouseNode as any).x) return (spouseNode as any).x;
-        }
+        const sp = spousePairs.get(d.id);
+        if (sp) { const sn = nodes.find(n => n.id === sp); if (sn && (sn as any).x) return (sn as any).x; }
         return width / 2;
       }).strength(0.05))
-      .alpha(0.8)
-      .alphaDecay(0.025);
+      .alpha(0.8).alphaDecay(0.025);
 
     simulationRef.current = simulation;
 
     simulation.on('tick', () => {
-      link.attr('d', (d: any) => {
-        const sx = d.source.x, sy = d.source.y;
-        const tx = d.target.x, ty = d.target.y;
-        if (d.category === 'spouse') {
-          return `M${sx},${sy} L${tx},${ty}`;
-        }
-        if (d.category === 'parent_child') {
-          // Smooth S-curve top to bottom
-          const my = (sy + ty) / 2;
-          return `M${sx},${sy} C${sx},${my} ${tx},${my} ${tx},${ty}`;
-        }
-        // Curved arc for sibling/cousin/etc (offset to avoid overlap with vertical lines)
-        const dx = tx - sx;
-        const dy = ty - sy;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        const bend = dist * 0.2;
-        const mx = (sx + tx) / 2 - (dy / dist) * bend;
-        const my = (sy + ty) / 2 + (dx / dist) * bend;
-        return `M${sx},${sy} Q${mx},${my} ${tx},${ty}`;
-      });
-
-      linkLabels
-        .attr('x', (d: any) => (d.source.x + d.target.x) / 2)
-        .attr('y', (d: any) => {
-          if (d.category === 'parent_child') return (d.source.y + d.target.y) / 2 - 6;
-          // Offset for curved links
-          const dx = d.target.x - d.source.x;
-          const dy = d.target.y - d.source.y;
-          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          const bend = dist * 0.2;
-          return (d.source.y + d.target.y) / 2 + (dx / dist) * bend - 6;
-        });
-
+      if (layoutModeRef.current !== 'force') return;
+      link.attr('d', computeLinkPath);
+      linkLabels.attr('x', (d: any) => computeLinkLabelPos(d).x).attr('y', (d: any) => computeLinkLabelPos(d).y);
       node.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
     });
 
-    simulation.on('end', () => fitToView());
+    simulation.on('end', () => { if (layoutModeRef.current === 'force') fitToView(); });
 
     return () => { simulation.stop(); };
   }, [people, relationships, width, height, visibleCategories, getPersonRelationships]);
 
   // ── Controls ──
-  const handleZoom = useCallback((factor: number) => {
-    if (zoomRef.current && svgRef.current) {
-      d3.select(svgRef.current).transition().duration(300).call(zoomRef.current.scaleBy, factor);
-    }
+  const handleZoom = useCallback((f: number) => {
+    if (zoomRef.current && svgRef.current) d3.select(svgRef.current).transition().duration(300).call(zoomRef.current.scaleBy, f);
   }, []);
 
   const handleCenter = useCallback(() => {
-    if (zoomRef.current && svgRef.current) {
-      d3.select(svgRef.current).transition().duration(300).call(zoomRef.current.transform, d3.zoomIdentity);
-    }
+    if (zoomRef.current && svgRef.current) d3.select(svgRef.current).transition().duration(300).call(zoomRef.current.transform, d3.zoomIdentity);
   }, []);
 
   const fitToView = useCallback(() => {
@@ -553,32 +666,19 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     const bounds = gRef.current.getBBox();
     if (bounds.width === 0 || bounds.height === 0) return;
     const pad = 80;
-    const scale = Math.min(
-      (width - pad * 2) / bounds.width,
-      (height - pad * 2) / bounds.height,
-      1.0
-    );
+    const scale = Math.min((width - pad * 2) / bounds.width, (height - pad * 2) / bounds.height, 1.0);
     const tx = width / 2 - scale * (bounds.x + bounds.width / 2);
     const ty = height / 2 - scale * (bounds.y + bounds.height / 2);
-    d3.select(svgRef.current).transition().duration(500).call(
-      zoomRef.current.transform,
-      d3.zoomIdentity.translate(tx, ty).scale(scale)
-    );
+    d3.select(svgRef.current).transition().duration(500).call(zoomRef.current.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
   }, [width, height]);
 
   // ── Export helpers ──
-
-  // Freeze all D3 transitions so the current visual state is captured
   const freezeTransitions = useCallback(() => {
-    if (!svgRef.current) return;
-    const svg = d3.select(svgRef.current);
-    svg.selectAll('*').interrupt();
+    if (svgRef.current) d3.select(svgRef.current).selectAll('*').interrupt();
   }, []);
 
-  // Build an export-ready SVG clone with title, legend, and relationship list baked in
   const buildExportClone = useCallback((opts: { includeRelList?: boolean } = {}) => {
     if (!svgRef.current || !gRef.current) return null;
-
     freezeTransitions();
 
     const bounds = gRef.current.getBBox();
@@ -586,7 +686,6 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     const legendHeight = 80;
     const relListWidth = opts.includeRelList && selectedPerson ? 260 : 0;
     const titleHeight = selectedPerson ? 50 : 30;
-
     const totalWidth = bounds.width + pad * 2 + relListWidth;
     const totalHeight = bounds.height + pad * 2 + titleHeight + legendHeight;
 
@@ -597,357 +696,165 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     clone.removeAttribute('class');
     clone.removeAttribute('style');
 
-    // Set viewBox so the graph content sits below the title and above the legend
     const graphG = clone.querySelector('.graph');
-    if (graphG) {
-      graphG.removeAttribute('transform');
-      graphG.setAttribute('transform', `translate(${-bounds.x + pad},${-bounds.y + pad + titleHeight})`);
-    }
-
+    if (graphG) { graphG.removeAttribute('transform'); graphG.setAttribute('transform', `translate(${-bounds.x + pad},${-bounds.y + pad + titleHeight})`); }
     clone.setAttribute('viewBox', `0 0 ${totalWidth} ${totalHeight}`);
 
-    // White background
+    // Background
     const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    bg.setAttribute('width', String(totalWidth));
-    bg.setAttribute('height', String(totalHeight));
-    bg.setAttribute('fill', 'white');
+    bg.setAttribute('width', String(totalWidth)); bg.setAttribute('height', String(totalHeight)); bg.setAttribute('fill', 'white');
     clone.insertBefore(bg, clone.firstChild);
 
     // Title
     const titleG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     const titleText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    titleText.setAttribute('x', String(pad));
-    titleText.setAttribute('y', '32');
-    titleText.setAttribute('font-size', '20');
-    titleText.setAttribute('font-weight', '700');
-    titleText.setAttribute('fill', '#1e293b');
-    titleText.setAttribute('font-family', 'system-ui, -apple-system, sans-serif');
-    titleText.textContent = selectedPerson
-      ? `Family connections of ${selectedPerson.person.name}`
-      : 'Family Tree';
+    titleText.setAttribute('x', String(pad)); titleText.setAttribute('y', '32'); titleText.setAttribute('font-size', '20'); titleText.setAttribute('font-weight', '700'); titleText.setAttribute('fill', '#1e293b'); titleText.setAttribute('font-family', 'system-ui, -apple-system, sans-serif');
+    titleText.textContent = selectedPerson ? `Family of ${selectedPerson.person.name}` : 'Family Tree';
     titleG.appendChild(titleText);
-
     if (selectedPerson) {
-      const subtitle = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      subtitle.setAttribute('x', String(pad));
-      subtitle.setAttribute('y', '48');
-      subtitle.setAttribute('font-size', '12');
-      subtitle.setAttribute('fill', '#94a3b8');
-      subtitle.setAttribute('font-family', 'system-ui, -apple-system, sans-serif');
+      const sub = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      sub.setAttribute('x', String(pad)); sub.setAttribute('y', '48'); sub.setAttribute('font-size', '12'); sub.setAttribute('fill', '#94a3b8'); sub.setAttribute('font-family', 'system-ui, -apple-system, sans-serif');
       const parts: string[] = [];
       if (selectedPerson.person.birthDate) parts.push(`b. ${new Date(selectedPerson.person.birthDate).getFullYear()}`);
       if (selectedPerson.person.birthPlace) parts.push(selectedPerson.person.birthPlace);
-      subtitle.textContent = parts.join(' · ');
-      titleG.appendChild(subtitle);
+      sub.textContent = parts.join(' · ');
+      titleG.appendChild(sub);
     }
     clone.appendChild(titleG);
 
-    // Legend at bottom
+    // Legend
     const legendY = totalHeight - legendHeight + 10;
     const legendG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     legendG.setAttribute('transform', `translate(${pad},${legendY})`);
+    const div = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    div.setAttribute('x1', '0'); div.setAttribute('y1', '-5'); div.setAttribute('x2', String(totalWidth - pad * 2)); div.setAttribute('y2', '-5'); div.setAttribute('stroke', '#e2e8f0'); div.setAttribute('stroke-width', '1');
+    legendG.appendChild(div);
 
-    // Legend divider
-    const divider = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    divider.setAttribute('x1', '0');
-    divider.setAttribute('y1', '-5');
-    divider.setAttribute('x2', String(totalWidth - pad * 2));
-    divider.setAttribute('y2', '-5');
-    divider.setAttribute('stroke', '#e2e8f0');
-    divider.setAttribute('stroke-width', '1');
-    legendG.appendChild(divider);
-
-    // Node colors
-    const nodeItems = [
-      { color: NODE_COLORS.male, label: 'Male' },
-      { color: NODE_COLORS.female, label: 'Female' },
-      { color: NODE_COLORS.deceased, label: 'Deceased' },
-    ];
-    nodeItems.forEach((item, i) => {
+    [{ color: NODE_COLORS.male, label: 'Male' }, { color: NODE_COLORS.female, label: 'Female' }, { color: NODE_COLORS.deceased, label: 'Deceased' }].forEach((item, i) => {
       const cx = i * 80;
-      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      circle.setAttribute('cx', String(cx + 6));
-      circle.setAttribute('cy', '10');
-      circle.setAttribute('r', '5');
-      circle.setAttribute('fill', item.color);
-      legendG.appendChild(circle);
-      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      text.setAttribute('x', String(cx + 16));
-      text.setAttribute('y', '14');
-      text.setAttribute('font-size', '11');
-      text.setAttribute('fill', '#64748b');
-      text.setAttribute('font-family', 'system-ui, -apple-system, sans-serif');
-      text.textContent = item.label;
-      legendG.appendChild(text);
+      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle'); c.setAttribute('cx', String(cx + 6)); c.setAttribute('cy', '10'); c.setAttribute('r', '5'); c.setAttribute('fill', item.color); legendG.appendChild(c);
+      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text'); t.setAttribute('x', String(cx + 16)); t.setAttribute('y', '14'); t.setAttribute('font-size', '11'); t.setAttribute('fill', '#64748b'); t.setAttribute('font-family', 'system-ui, -apple-system, sans-serif'); t.textContent = item.label; legendG.appendChild(t);
     });
 
-    // Line types (only visible ones)
-    const visibleCats = REL_CATEGORIES.filter(c => visibleCategories.has(c.key));
-    visibleCats.forEach((cat, i) => {
-      const cx = i * 110;
-      const ly = 35;
-      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-      line.setAttribute('x1', String(cx));
-      line.setAttribute('y1', String(ly));
-      line.setAttribute('x2', String(cx + 22));
-      line.setAttribute('y2', String(ly));
-      line.setAttribute('stroke', cat.color);
-      line.setAttribute('stroke-width', '2.5');
-      if (cat.dash) line.setAttribute('stroke-dasharray', cat.dash);
-      legendG.appendChild(line);
-      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      text.setAttribute('x', String(cx + 28));
-      text.setAttribute('y', String(ly + 4));
-      text.setAttribute('font-size', '11');
-      text.setAttribute('fill', '#64748b');
-      text.setAttribute('font-family', 'system-ui, -apple-system, sans-serif');
-      text.textContent = cat.label;
-      legendG.appendChild(text);
+    REL_CATEGORIES.filter(c => visibleCategories.has(c.key)).forEach((cat, i) => {
+      const cx = i * 110; const ly = 35;
+      const l = document.createElementNS('http://www.w3.org/2000/svg', 'line'); l.setAttribute('x1', String(cx)); l.setAttribute('y1', String(ly)); l.setAttribute('x2', String(cx + 22)); l.setAttribute('y2', String(ly)); l.setAttribute('stroke', cat.color); l.setAttribute('stroke-width', '2.5'); if (cat.dash) l.setAttribute('stroke-dasharray', cat.dash); legendG.appendChild(l);
+      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text'); t.setAttribute('x', String(cx + 28)); t.setAttribute('y', String(ly + 4)); t.setAttribute('font-size', '11'); t.setAttribute('fill', '#64748b'); t.setAttribute('font-family', 'system-ui, -apple-system, sans-serif'); t.textContent = cat.label; legendG.appendChild(t);
     });
-
     clone.appendChild(legendG);
 
-    // Relationship list sidebar (for print)
+    // Relationship list sidebar
     if (opts.includeRelList && selectedPerson && selectedPerson.relationships.length > 0) {
       const listX = totalWidth - relListWidth + 10;
       const listG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
       listG.setAttribute('transform', `translate(${listX},${titleHeight + pad})`);
-
-      // Background
-      const listBg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      listBg.setAttribute('x', '-10');
-      listBg.setAttribute('y', '-10');
-      listBg.setAttribute('width', String(relListWidth - 10));
-      listBg.setAttribute('height', String(Math.min(selectedPerson.relationships.length * 22 + 40, bounds.height)));
-      listBg.setAttribute('fill', '#f8fafc');
-      listBg.setAttribute('rx', '8');
-      listBg.setAttribute('stroke', '#e2e8f0');
-      listG.appendChild(listBg);
-
-      const header = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      header.setAttribute('y', '8');
-      header.setAttribute('font-size', '13');
-      header.setAttribute('font-weight', '600');
-      header.setAttribute('fill', '#1e293b');
-      header.setAttribute('font-family', 'system-ui, -apple-system, sans-serif');
-      header.textContent = `Relationships (${selectedPerson.relationships.length})`;
-      listG.appendChild(header);
-
+      const listBg = document.createElementNS('http://www.w3.org/2000/svg', 'rect'); listBg.setAttribute('x', '-10'); listBg.setAttribute('y', '-10'); listBg.setAttribute('width', String(relListWidth - 10)); listBg.setAttribute('height', String(Math.min(selectedPerson.relationships.length * 22 + 40, bounds.height))); listBg.setAttribute('fill', '#f8fafc'); listBg.setAttribute('rx', '8'); listBg.setAttribute('stroke', '#e2e8f0'); listG.appendChild(listBg);
+      const hdr = document.createElementNS('http://www.w3.org/2000/svg', 'text'); hdr.setAttribute('y', '8'); hdr.setAttribute('font-size', '13'); hdr.setAttribute('font-weight', '600'); hdr.setAttribute('fill', '#1e293b'); hdr.setAttribute('font-family', 'system-ui, -apple-system, sans-serif'); hdr.textContent = `Relationships (${selectedPerson.relationships.length})`; listG.appendChild(hdr);
       selectedPerson.relationships.forEach((rel, i) => {
-        const y = 30 + i * 22;
-        const cat = getCategoryForType(rel.type);
-
-        const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-        dot.setAttribute('cx', '4');
-        dot.setAttribute('cy', String(y));
-        dot.setAttribute('r', '3');
-        dot.setAttribute('fill', cat?.color ?? '#999');
-        listG.appendChild(dot);
-
-        const typeText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        typeText.setAttribute('x', '14');
-        typeText.setAttribute('y', String(y + 4));
-        typeText.setAttribute('font-size', '11');
-        typeText.setAttribute('fill', '#94a3b8');
-        typeText.setAttribute('font-family', 'system-ui, -apple-system, sans-serif');
-        typeText.textContent = rel.type;
-        listG.appendChild(typeText);
-
-        const nameText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        nameText.setAttribute('x', '90');
-        nameText.setAttribute('y', String(y + 4));
-        nameText.setAttribute('font-size', '11');
-        nameText.setAttribute('font-weight', '500');
-        nameText.setAttribute('fill', '#1e293b');
-        nameText.setAttribute('font-family', 'system-ui, -apple-system, sans-serif');
-        nameText.textContent = rel.name;
-        listG.appendChild(nameText);
+        const y = 30 + i * 22; const cat = getCategoryForType(rel.type);
+        const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle'); dot.setAttribute('cx', '4'); dot.setAttribute('cy', String(y)); dot.setAttribute('r', '3'); dot.setAttribute('fill', cat?.color ?? '#999'); listG.appendChild(dot);
+        const tt = document.createElementNS('http://www.w3.org/2000/svg', 'text'); tt.setAttribute('x', '14'); tt.setAttribute('y', String(y + 4)); tt.setAttribute('font-size', '11'); tt.setAttribute('fill', '#94a3b8'); tt.setAttribute('font-family', 'system-ui, -apple-system, sans-serif'); tt.textContent = rel.type; listG.appendChild(tt);
+        const nt = document.createElementNS('http://www.w3.org/2000/svg', 'text'); nt.setAttribute('x', '90'); nt.setAttribute('y', String(y + 4)); nt.setAttribute('font-size', '11'); nt.setAttribute('font-weight', '500'); nt.setAttribute('fill', '#1e293b'); nt.setAttribute('font-family', 'system-ui, -apple-system, sans-serif'); nt.textContent = rel.name; listG.appendChild(nt);
       });
-
       clone.appendChild(listG);
     }
 
     return { clone, totalWidth, totalHeight, bounds, pad, titleHeight };
   }, [freezeTransitions, selectedPerson, visibleCategories]);
 
-  // ── Export functions ──
-
   const exportSVG = useCallback(() => {
-    const result = buildExportClone();
-    if (!result) return;
+    if (isTransitioningRef.current) return;
+    const result = buildExportClone(); if (!result) return;
     const svgData = new XMLSerializer().serializeToString(result.clone);
     const blob = new Blob([svgData], { type: 'image/svg+xml' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     const suffix = selectedPerson ? `_${selectedPerson.person.name.replace(/\s+/g, '_')}` : '';
-    a.download = `family_tree${suffix}_${new Date().toISOString().split('T')[0]}.svg`;
-    a.href = url;
-    a.click();
-    URL.revokeObjectURL(url);
+    a.download = `family_tree${suffix}_${new Date().toISOString().split('T')[0]}.svg`; a.href = url; a.click(); URL.revokeObjectURL(url);
     setShowExportMenu(false);
   }, [buildExportClone, selectedPerson]);
 
   const exportPNG = useCallback(async () => {
-    const result = buildExportClone();
-    if (!result) return;
+    if (isTransitioningRef.current) return;
+    const result = buildExportClone(); if (!result) return;
     setExporting(true);
     try {
       const { clone, totalWidth, totalHeight } = result;
       const scale = 2;
-      const canvas = document.createElement('canvas');
-      canvas.width = totalWidth * scale;
-      canvas.height = totalHeight * scale;
-      const ctx = canvas.getContext('2d')!;
-      ctx.scale(scale, scale);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, totalWidth, totalHeight);
-
+      const canvas = document.createElement('canvas'); canvas.width = totalWidth * scale; canvas.height = totalHeight * scale;
+      const ctx = canvas.getContext('2d')!; ctx.scale(scale, scale); ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, totalWidth, totalHeight);
       const svgData = new XMLSerializer().serializeToString(clone);
       const img = new Image();
-      const blob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-
+      const blob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' }); const url = URL.createObjectURL(blob);
       await new Promise<void>((resolve, reject) => {
-        img.onload = () => {
-          ctx.drawImage(img, 0, 0, totalWidth, totalHeight);
-          URL.revokeObjectURL(url);
-          const pngUrl = canvas.toDataURL('image/png');
-          const a = document.createElement('a');
-          const suffix = selectedPerson ? `_${selectedPerson.person.name.replace(/\s+/g, '_')}` : '';
-          a.download = `family_tree${suffix}_${new Date().toISOString().split('T')[0]}.png`;
-          a.href = pngUrl;
-          a.click();
-          resolve();
-        };
-        img.onerror = reject;
-        img.src = url;
+        img.onload = () => { ctx.drawImage(img, 0, 0, totalWidth, totalHeight); URL.revokeObjectURL(url); const pngUrl = canvas.toDataURL('image/png'); const a = document.createElement('a'); const suffix = selectedPerson ? `_${selectedPerson.person.name.replace(/\s+/g, '_')}` : ''; a.download = `family_tree${suffix}_${new Date().toISOString().split('T')[0]}.png`; a.href = pngUrl; a.click(); resolve(); };
+        img.onerror = reject; img.src = url;
       });
-    } finally {
-      setExporting(false);
-      setShowExportMenu(false);
-    }
+    } finally { setExporting(false); setShowExportMenu(false); }
   }, [buildExportClone, selectedPerson]);
 
   const printView = useCallback(() => {
-    const result = buildExportClone({ includeRelList: true });
-    if (!result) return;
-    const { clone } = result;
-    clone.setAttribute('width', '100%');
-    clone.setAttribute('height', '');
-    clone.style.maxHeight = '100vh';
-
-    const title = selectedPerson
-      ? `Family Tree — ${selectedPerson.person.name}`
-      : 'Family Tree';
-
-    const printWindow = window.open('', '_blank');
-    if (printWindow) {
-      printWindow.document.write(`
-        <!DOCTYPE html><html><head><title>${title}</title>
-        <style>
-          body { margin: 20px; background: white; font-family: system-ui, -apple-system, sans-serif; }
-          svg { width: 100%; height: auto; max-height: 90vh; display: block; }
-          @media print {
-            body { margin: 10px; }
-            svg { width: 100%; height: auto; page-break-inside: avoid; }
-          }
-        </style>
-        </head><body>${clone.outerHTML}</body></html>
-      `);
-      printWindow.document.close();
-      setTimeout(() => printWindow.print(), 500);
+    if (isTransitioningRef.current) return;
+    const result = buildExportClone({ includeRelList: true }); if (!result) return;
+    const { clone } = result; clone.setAttribute('width', '100%'); clone.setAttribute('height', ''); clone.style.maxHeight = '100vh';
+    const title = selectedPerson ? `Family Tree — ${selectedPerson.person.name}` : 'Family Tree';
+    const pw = window.open('', '_blank');
+    if (pw) {
+      pw.document.write(`<!DOCTYPE html><html><head><title>${title}</title><style>body{margin:20px;background:white;font-family:system-ui,-apple-system,sans-serif}svg{width:100%;height:auto;max-height:90vh;display:block}@media print{body{margin:10px}svg{width:100%;height:auto;page-break-inside:avoid}}</style></head><body>${clone.outerHTML}</body></html>`);
+      pw.document.close(); setTimeout(() => pw.print(), 500);
     }
     setShowExportMenu(false);
   }, [buildExportClone, selectedPerson]);
 
   const handleSearchSelect = (personId: string) => {
-    setSearchOpen(false);
-    setSearchValue('');
+    setSearchOpen(false); setSearchValue('');
     if (gRef.current && zoomRef.current && svgRef.current) {
-      const nodeData = d3.select(gRef.current).selectAll<SVGGElement, any>('.nodes g')
-        .filter((d: any) => d.id === personId);
-      if (!nodeData.empty()) {
-        const d: any = nodeData.datum();
-        const scale = 1.2;
-        d3.select(svgRef.current).transition().duration(500).call(
-          zoomRef.current.transform,
-          d3.zoomIdentity.translate(width / 2 - scale * d.x, height / 2 - scale * d.y).scale(scale)
-        );
-        nodeData.select('.select-ring')
-          .attr('stroke', '#fbbf24')
-          .transition().duration(2000)
-          .attr('stroke', 'transparent');
+      const nd = d3.select(gRef.current).selectAll<SVGGElement, any>('.nodes g').filter((d: any) => d.id === personId);
+      if (!nd.empty()) {
+        const d: any = nd.datum(); const scale = 1.2;
+        d3.select(svgRef.current).transition().duration(500).call(zoomRef.current.transform, d3.zoomIdentity.translate(width / 2 - scale * d.x, height / 2 - scale * d.y).scale(scale));
+        nd.select('.select-ring').attr('stroke', '#fbbf24').transition().duration(2000).attr('stroke', 'transparent');
       }
     }
   };
 
   const handleDeleteRelationship = () => {
-    if (contextMenu.relationship && onDeleteRelationship) {
-      onDeleteRelationship(contextMenu.relationship.id);
-      setContextMenu(prev => ({ ...prev, visible: false }));
-    }
+    if (contextMenu.relationship && onDeleteRelationship) { onDeleteRelationship(contextMenu.relationship.id); setContextMenu(prev => ({ ...prev, visible: false })); }
   };
 
   if (people.length === 0) {
     return (
       <div className="w-full h-full flex items-center justify-center text-muted-foreground">
-        <div className="text-center">
-          <p className="text-lg font-medium mb-2">No family members yet</p>
-          <p className="text-sm">Add people to see the family tree visualization</p>
-        </div>
+        <div className="text-center"><p className="text-lg font-medium mb-2">No family members yet</p><p className="text-sm">Add people to see the family tree visualization</p></div>
       </div>
     );
   }
 
   return (
     <div ref={containerRef} className="relative w-full h-full">
-      <svg
-        ref={svgRef}
-        width={width}
-        height={height}
-        className="bg-white"
-        style={{ width: '100%', height: '100%' }}
-      />
+      <svg ref={svgRef} width={width} height={height} className="bg-white" style={{ width: '100%', height: '100%' }} />
 
-      {/* ── Legend + Filters (bottom-left) ── */}
+      {/* Legend + Filters */}
       <div className="absolute bottom-3 left-3 bg-white/95 backdrop-blur-sm rounded-lg shadow border px-3 py-2.5 text-xs max-w-[280px] z-20">
         <div className="font-semibold text-gray-700 mb-2">Show / Hide Relationships</div>
-
-        {/* Node colors */}
         <div className="flex items-center gap-3 mb-2 pb-2 border-b border-gray-100">
-          <div className="flex items-center gap-1">
-            <span className="w-3 h-3 rounded-full" style={{ background: NODE_COLORS.male }} /> Male
-          </div>
-          <div className="flex items-center gap-1">
-            <span className="w-3 h-3 rounded-full" style={{ background: NODE_COLORS.female }} /> Female
-          </div>
-          <div className="flex items-center gap-1">
-            <span className="w-3 h-3 rounded-full" style={{ background: NODE_COLORS.deceased }} /> Deceased
-          </div>
+          <div className="flex items-center gap-1"><span className="w-3 h-3 rounded-full" style={{ background: NODE_COLORS.male }} /> Male</div>
+          <div className="flex items-center gap-1"><span className="w-3 h-3 rounded-full" style={{ background: NODE_COLORS.female }} /> Female</div>
+          <div className="flex items-center gap-1"><span className="w-3 h-3 rounded-full" style={{ background: NODE_COLORS.deceased }} /> Deceased</div>
         </div>
-
-        {/* Relationship toggles */}
         <div className="space-y-1">
           {REL_CATEGORIES.map(cat => (
             <label key={cat.key} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5">
-              <input
-                type="checkbox"
-                checked={visibleCategories.has(cat.key)}
-                onChange={() => toggleCategory(cat.key)}
-                className="rounded border-gray-300"
-              />
-              <svg width="24" height="10" className="shrink-0">
-                <line x1="0" y1="5" x2="24" y2="5"
-                  stroke={cat.color} strokeWidth="2.5"
-                  strokeDasharray={cat.dash || 'none'} />
-              </svg>
+              <input type="checkbox" checked={visibleCategories.has(cat.key)} onChange={() => toggleCategory(cat.key)} className="rounded border-gray-300" />
+              <svg width="24" height="10" className="shrink-0"><line x1="0" y1="5" x2="24" y2="5" stroke={cat.color} strokeWidth="2.5" strokeDasharray={cat.dash || 'none'} /></svg>
               <span className="text-gray-700">{cat.label}</span>
             </label>
           ))}
         </div>
+        <div className="mt-2 pt-2 border-t border-gray-100 text-gray-400">Click a person for hierarchy view</div>
       </div>
 
-      {/* ── Selected Person Detail Panel (bottom-right) ── */}
+      {/* Selected Person Detail Panel */}
       {selectedPerson && (
         <div className="absolute bottom-3 right-14 bg-white/95 backdrop-blur-sm rounded-lg shadow-lg border w-72 max-h-[320px] overflow-y-auto z-20">
           <div className="sticky top-0 bg-white border-b px-3 py-2 flex items-center justify-between">
@@ -959,14 +866,10 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
                 {selectedPerson.person.birthPlace && ` · ${selectedPerson.person.birthPlace}`}
               </div>
             </div>
-            <button onClick={() => setSelectedPerson(null)} className="p-1 hover:bg-gray-100 rounded">
-              <X className="w-3.5 h-3.5" />
-            </button>
+            <button onClick={() => setSelectedPerson(null)} className="p-1 hover:bg-gray-100 rounded"><X className="w-3.5 h-3.5" /></button>
           </div>
           <div className="px-3 py-2">
-            <div className="text-xs font-medium text-gray-500 mb-1">
-              Relationships ({selectedPerson.relationships.length})
-            </div>
+            <div className="text-xs font-medium text-gray-500 mb-1">Relationships ({selectedPerson.relationships.length})</div>
             {selectedPerson.relationships.length === 0 ? (
               <div className="text-xs text-gray-400 py-2">No relationships found</div>
             ) : (
@@ -987,102 +890,49 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
         </div>
       )}
 
-      {/* ── Search (top-left) ── */}
+      {/* Search */}
       <div className="absolute top-3 left-3 z-30">
-        <button
-          className="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 border"
-          title="Search"
-          onClick={() => setSearchOpen(v => !v)}
-        >
-          <Search className="w-4 h-4" />
-        </button>
+        <button className="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 border" title="Search" onClick={() => setSearchOpen(v => !v)}><Search className="w-4 h-4" /></button>
         {searchOpen && (
           <div className="mt-1 bg-white border rounded-lg shadow-lg p-2 w-64">
-            <input
-              type="text"
-              className="w-full border rounded px-2 py-1 mb-1 text-sm"
-              placeholder="Search by name..."
-              value={searchValue}
-              onChange={e => setSearchValue(e.target.value)}
-              autoFocus
-            />
+            <input type="text" className="w-full border rounded px-2 py-1 mb-1 text-sm" placeholder="Search by name..." value={searchValue} onChange={e => setSearchValue(e.target.value)} autoFocus />
             <div className="max-h-40 overflow-y-auto">
               {people.filter(p => p.name.toLowerCase().includes(searchValue.toLowerCase())).map(p => (
-                <div
-                  key={p.id}
-                  className="px-2 py-1 hover:bg-indigo-50 cursor-pointer rounded text-sm"
-                  onClick={() => handleSearchSelect(p.id)}
-                >
-                  {p.name}
-                </div>
+                <div key={p.id} className="px-2 py-1 hover:bg-indigo-50 cursor-pointer rounded text-sm" onClick={() => handleSearchSelect(p.id)}>{p.name}</div>
               ))}
             </div>
           </div>
         )}
       </div>
 
-      {/* ── Zoom + Export Controls (top-right) ── */}
+      {/* Zoom + Export Controls */}
       <div className="absolute top-3 right-3 flex flex-col gap-1 z-20">
         <button onClick={() => handleZoom(1.3)} className="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 border" title="Zoom In"><ZoomIn className="w-4 h-4" /></button>
         <button onClick={() => handleZoom(1 / 1.3)} className="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 border" title="Zoom Out"><ZoomOut className="w-4 h-4" /></button>
         <button onClick={handleCenter} className="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 border" title="Reset View"><RotateCcw className="w-4 h-4" /></button>
         <button onClick={fitToView} className="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 border" title="Fit to View"><Maximize2 className="w-4 h-4" /></button>
-
-        {/* Export dropdown */}
         <div className="relative">
-          <button
-            onClick={() => setShowExportMenu(v => !v)}
-            className="p-2 bg-indigo-600 text-white rounded-lg shadow-sm hover:bg-indigo-700 border border-indigo-700"
-            title="Export / Print"
-          >
-            <Download className="w-4 h-4" />
-          </button>
+          <button onClick={() => setShowExportMenu(v => !v)} className="p-2 bg-indigo-600 text-white rounded-lg shadow-sm hover:bg-indigo-700 border border-indigo-700" title="Export / Print"><Download className="w-4 h-4" /></button>
           {showExportMenu && (
             <div className="absolute right-0 mt-1 bg-white border rounded-lg shadow-lg py-1 w-56 z-50">
-              {selectedPerson && (
-                <div className="px-3 py-1.5 text-xs text-indigo-600 font-medium border-b border-gray-100">
-                  Exporting: {selectedPerson.person.name}'s connections
-                </div>
-              )}
-              <button onClick={printView} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
-                <Printer className="w-4 h-4" /> Print / Save as PDF
-              </button>
-              <button onClick={exportPNG} disabled={exporting} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50">
-                <FileDown className="w-4 h-4" /> Export as PNG
-              </button>
-              <button onClick={exportSVG} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
-                <FileDown className="w-4 h-4" /> Export as SVG
-              </button>
-              {!selectedPerson && (
-                <div className="px-3 py-1.5 text-xs text-gray-400 border-t border-gray-100">
-                  Tip: Click a person first to export their family view
-                </div>
-              )}
+              {selectedPerson && <div className="px-3 py-1.5 text-xs text-indigo-600 font-medium border-b border-gray-100">Exporting: {selectedPerson.person.name}'s family</div>}
+              <button onClick={printView} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2"><Printer className="w-4 h-4" /> Print / Save as PDF</button>
+              <button onClick={exportPNG} disabled={exporting} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"><FileDown className="w-4 h-4" /> Export as PNG</button>
+              <button onClick={exportSVG} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2"><FileDown className="w-4 h-4" /> Export as SVG</button>
+              {!selectedPerson && <div className="px-3 py-1.5 text-xs text-gray-400 border-t border-gray-100">Tip: Click a person first to export their family view</div>}
             </div>
           )}
         </div>
       </div>
 
-      {/* ── Context Menu ── */}
+      {/* Context Menu */}
       {contextMenu.visible && contextMenu.relationship && (
-        <div
-          className="absolute z-50 bg-white rounded-lg shadow-lg border py-1 min-w-[180px]"
-          style={{ left: contextMenu.x, top: contextMenu.y, transform: 'translate(-50%, -110%)' }}
-          onClick={e => e.stopPropagation()}
-        >
+        <div className="absolute z-50 bg-white rounded-lg shadow-lg border py-1 min-w-[180px]" style={{ left: contextMenu.x, top: contextMenu.y, transform: 'translate(-50%, -110%)' }} onClick={e => e.stopPropagation()}>
           <div className="px-3 py-2 border-b">
             <div className="text-xs text-gray-500 capitalize">{contextMenu.relationship.relationshipType}</div>
-            <div className="text-sm font-medium">
-              {people.find(p => p.id === contextMenu.relationship?.personId)?.name} &rarr;{' '}
-              {people.find(p => p.id === contextMenu.relationship?.relatedPersonId)?.name}
-            </div>
+            <div className="text-sm font-medium">{people.find(p => p.id === contextMenu.relationship?.personId)?.name} &rarr; {people.find(p => p.id === contextMenu.relationship?.relatedPersonId)?.name}</div>
           </div>
-          <button
-            onClick={handleDeleteRelationship}
-            className="w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
-          >
-            Delete Relationship
-          </button>
+          <button onClick={handleDeleteRelationship} className="w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50">Delete Relationship</button>
         </div>
       )}
     </div>
