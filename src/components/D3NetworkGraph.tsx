@@ -566,56 +566,241 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     );
   }, [width, height]);
 
-  // ── Export ──
-  const exportSVG = useCallback(() => {
+  // ── Export helpers ──
+
+  // Freeze all D3 transitions so the current visual state is captured
+  const freezeTransitions = useCallback(() => {
     if (!svgRef.current) return;
-    const clone = svgRef.current.cloneNode(true) as SVGSVGElement;
-    // Expand viewBox to fit content
-    if (gRef.current) {
-      const bounds = gRef.current.getBBox();
-      const pad = 40;
-      clone.setAttribute('viewBox', `${bounds.x - pad} ${bounds.y - pad} ${bounds.width + pad * 2} ${bounds.height + pad * 2}`);
-      clone.setAttribute('width', String(bounds.width + pad * 2));
-      clone.setAttribute('height', String(bounds.height + pad * 2));
-      // Remove the transform on <g class="graph"> so it renders at actual coords
-      const gElem = clone.querySelector('.graph');
-      if (gElem) gElem.removeAttribute('transform');
-    }
-    const svgData = new XMLSerializer().serializeToString(clone);
-    const blob = new Blob([svgData], { type: 'image/svg+xml' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.download = `family_tree_${new Date().toISOString().split('T')[0]}.svg`;
-    link.href = url;
-    link.click();
-    URL.revokeObjectURL(url);
-    setShowExportMenu(false);
+    const svg = d3.select(svgRef.current);
+    svg.selectAll('*').interrupt();
   }, []);
 
+  // Build an export-ready SVG clone with title, legend, and relationship list baked in
+  const buildExportClone = useCallback((opts: { includeRelList?: boolean } = {}) => {
+    if (!svgRef.current || !gRef.current) return null;
+
+    freezeTransitions();
+
+    const bounds = gRef.current.getBBox();
+    const pad = 60;
+    const legendHeight = 80;
+    const relListWidth = opts.includeRelList && selectedPerson ? 260 : 0;
+    const titleHeight = selectedPerson ? 50 : 30;
+
+    const totalWidth = bounds.width + pad * 2 + relListWidth;
+    const totalHeight = bounds.height + pad * 2 + titleHeight + legendHeight;
+
+    const clone = svgRef.current.cloneNode(true) as SVGSVGElement;
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    clone.setAttribute('width', String(totalWidth));
+    clone.setAttribute('height', String(totalHeight));
+    clone.removeAttribute('class');
+    clone.removeAttribute('style');
+
+    // Set viewBox so the graph content sits below the title and above the legend
+    const graphG = clone.querySelector('.graph');
+    if (graphG) {
+      graphG.removeAttribute('transform');
+      graphG.setAttribute('transform', `translate(${-bounds.x + pad},${-bounds.y + pad + titleHeight})`);
+    }
+
+    clone.setAttribute('viewBox', `0 0 ${totalWidth} ${totalHeight}`);
+
+    // White background
+    const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    bg.setAttribute('width', String(totalWidth));
+    bg.setAttribute('height', String(totalHeight));
+    bg.setAttribute('fill', 'white');
+    clone.insertBefore(bg, clone.firstChild);
+
+    // Title
+    const titleG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    const titleText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    titleText.setAttribute('x', String(pad));
+    titleText.setAttribute('y', '32');
+    titleText.setAttribute('font-size', '20');
+    titleText.setAttribute('font-weight', '700');
+    titleText.setAttribute('fill', '#1e293b');
+    titleText.setAttribute('font-family', 'system-ui, -apple-system, sans-serif');
+    titleText.textContent = selectedPerson
+      ? `Family connections of ${selectedPerson.person.name}`
+      : 'Family Tree';
+    titleG.appendChild(titleText);
+
+    if (selectedPerson) {
+      const subtitle = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      subtitle.setAttribute('x', String(pad));
+      subtitle.setAttribute('y', '48');
+      subtitle.setAttribute('font-size', '12');
+      subtitle.setAttribute('fill', '#94a3b8');
+      subtitle.setAttribute('font-family', 'system-ui, -apple-system, sans-serif');
+      const parts: string[] = [];
+      if (selectedPerson.person.birthDate) parts.push(`b. ${new Date(selectedPerson.person.birthDate).getFullYear()}`);
+      if (selectedPerson.person.birthPlace) parts.push(selectedPerson.person.birthPlace);
+      subtitle.textContent = parts.join(' · ');
+      titleG.appendChild(subtitle);
+    }
+    clone.appendChild(titleG);
+
+    // Legend at bottom
+    const legendY = totalHeight - legendHeight + 10;
+    const legendG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    legendG.setAttribute('transform', `translate(${pad},${legendY})`);
+
+    // Legend divider
+    const divider = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    divider.setAttribute('x1', '0');
+    divider.setAttribute('y1', '-5');
+    divider.setAttribute('x2', String(totalWidth - pad * 2));
+    divider.setAttribute('y2', '-5');
+    divider.setAttribute('stroke', '#e2e8f0');
+    divider.setAttribute('stroke-width', '1');
+    legendG.appendChild(divider);
+
+    // Node colors
+    const nodeItems = [
+      { color: NODE_COLORS.male, label: 'Male' },
+      { color: NODE_COLORS.female, label: 'Female' },
+      { color: NODE_COLORS.deceased, label: 'Deceased' },
+    ];
+    nodeItems.forEach((item, i) => {
+      const cx = i * 80;
+      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      circle.setAttribute('cx', String(cx + 6));
+      circle.setAttribute('cy', '10');
+      circle.setAttribute('r', '5');
+      circle.setAttribute('fill', item.color);
+      legendG.appendChild(circle);
+      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      text.setAttribute('x', String(cx + 16));
+      text.setAttribute('y', '14');
+      text.setAttribute('font-size', '11');
+      text.setAttribute('fill', '#64748b');
+      text.setAttribute('font-family', 'system-ui, -apple-system, sans-serif');
+      text.textContent = item.label;
+      legendG.appendChild(text);
+    });
+
+    // Line types (only visible ones)
+    const visibleCats = REL_CATEGORIES.filter(c => visibleCategories.has(c.key));
+    visibleCats.forEach((cat, i) => {
+      const cx = i * 110;
+      const ly = 35;
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', String(cx));
+      line.setAttribute('y1', String(ly));
+      line.setAttribute('x2', String(cx + 22));
+      line.setAttribute('y2', String(ly));
+      line.setAttribute('stroke', cat.color);
+      line.setAttribute('stroke-width', '2.5');
+      if (cat.dash) line.setAttribute('stroke-dasharray', cat.dash);
+      legendG.appendChild(line);
+      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      text.setAttribute('x', String(cx + 28));
+      text.setAttribute('y', String(ly + 4));
+      text.setAttribute('font-size', '11');
+      text.setAttribute('fill', '#64748b');
+      text.setAttribute('font-family', 'system-ui, -apple-system, sans-serif');
+      text.textContent = cat.label;
+      legendG.appendChild(text);
+    });
+
+    clone.appendChild(legendG);
+
+    // Relationship list sidebar (for print)
+    if (opts.includeRelList && selectedPerson && selectedPerson.relationships.length > 0) {
+      const listX = totalWidth - relListWidth + 10;
+      const listG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      listG.setAttribute('transform', `translate(${listX},${titleHeight + pad})`);
+
+      // Background
+      const listBg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      listBg.setAttribute('x', '-10');
+      listBg.setAttribute('y', '-10');
+      listBg.setAttribute('width', String(relListWidth - 10));
+      listBg.setAttribute('height', String(Math.min(selectedPerson.relationships.length * 22 + 40, bounds.height)));
+      listBg.setAttribute('fill', '#f8fafc');
+      listBg.setAttribute('rx', '8');
+      listBg.setAttribute('stroke', '#e2e8f0');
+      listG.appendChild(listBg);
+
+      const header = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      header.setAttribute('y', '8');
+      header.setAttribute('font-size', '13');
+      header.setAttribute('font-weight', '600');
+      header.setAttribute('fill', '#1e293b');
+      header.setAttribute('font-family', 'system-ui, -apple-system, sans-serif');
+      header.textContent = `Relationships (${selectedPerson.relationships.length})`;
+      listG.appendChild(header);
+
+      selectedPerson.relationships.forEach((rel, i) => {
+        const y = 30 + i * 22;
+        const cat = getCategoryForType(rel.type);
+
+        const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        dot.setAttribute('cx', '4');
+        dot.setAttribute('cy', String(y));
+        dot.setAttribute('r', '3');
+        dot.setAttribute('fill', cat?.color ?? '#999');
+        listG.appendChild(dot);
+
+        const typeText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        typeText.setAttribute('x', '14');
+        typeText.setAttribute('y', String(y + 4));
+        typeText.setAttribute('font-size', '11');
+        typeText.setAttribute('fill', '#94a3b8');
+        typeText.setAttribute('font-family', 'system-ui, -apple-system, sans-serif');
+        typeText.textContent = rel.type;
+        listG.appendChild(typeText);
+
+        const nameText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        nameText.setAttribute('x', '90');
+        nameText.setAttribute('y', String(y + 4));
+        nameText.setAttribute('font-size', '11');
+        nameText.setAttribute('font-weight', '500');
+        nameText.setAttribute('fill', '#1e293b');
+        nameText.setAttribute('font-family', 'system-ui, -apple-system, sans-serif');
+        nameText.textContent = rel.name;
+        listG.appendChild(nameText);
+      });
+
+      clone.appendChild(listG);
+    }
+
+    return { clone, totalWidth, totalHeight, bounds, pad, titleHeight };
+  }, [freezeTransitions, selectedPerson, visibleCategories]);
+
+  // ── Export functions ──
+
+  const exportSVG = useCallback(() => {
+    const result = buildExportClone();
+    if (!result) return;
+    const svgData = new XMLSerializer().serializeToString(result.clone);
+    const blob = new Blob([svgData], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const suffix = selectedPerson ? `_${selectedPerson.person.name.replace(/\s+/g, '_')}` : '';
+    a.download = `family_tree${suffix}_${new Date().toISOString().split('T')[0]}.svg`;
+    a.href = url;
+    a.click();
+    URL.revokeObjectURL(url);
+    setShowExportMenu(false);
+  }, [buildExportClone, selectedPerson]);
+
   const exportPNG = useCallback(async () => {
-    if (!svgRef.current || !gRef.current) return;
+    const result = buildExportClone();
+    if (!result) return;
     setExporting(true);
     try {
-      const bounds = gRef.current.getBBox();
-      const pad = 60;
-      const exportWidth = bounds.width + pad * 2;
-      const exportHeight = bounds.height + pad * 2;
+      const { clone, totalWidth, totalHeight } = result;
       const scale = 2;
-
       const canvas = document.createElement('canvas');
-      canvas.width = exportWidth * scale;
-      canvas.height = exportHeight * scale;
+      canvas.width = totalWidth * scale;
+      canvas.height = totalHeight * scale;
       const ctx = canvas.getContext('2d')!;
       ctx.scale(scale, scale);
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, exportWidth, exportHeight);
-
-      const clone = svgRef.current.cloneNode(true) as SVGSVGElement;
-      clone.setAttribute('viewBox', `${bounds.x - pad} ${bounds.y - pad} ${exportWidth} ${exportHeight}`);
-      clone.setAttribute('width', String(exportWidth));
-      clone.setAttribute('height', String(exportHeight));
-      const gElem = clone.querySelector('.graph');
-      if (gElem) gElem.removeAttribute('transform');
+      ctx.fillRect(0, 0, totalWidth, totalHeight);
 
       const svgData = new XMLSerializer().serializeToString(clone);
       const img = new Image();
@@ -624,13 +809,14 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
 
       await new Promise<void>((resolve, reject) => {
         img.onload = () => {
-          ctx.drawImage(img, 0, 0, exportWidth, exportHeight);
+          ctx.drawImage(img, 0, 0, totalWidth, totalHeight);
           URL.revokeObjectURL(url);
           const pngUrl = canvas.toDataURL('image/png');
-          const link = document.createElement('a');
-          link.download = `family_tree_${new Date().toISOString().split('T')[0]}.png`;
-          link.href = pngUrl;
-          link.click();
+          const a = document.createElement('a');
+          const suffix = selectedPerson ? `_${selectedPerson.person.name.replace(/\s+/g, '_')}` : '';
+          a.download = `family_tree${suffix}_${new Date().toISOString().split('T')[0]}.png`;
+          a.href = pngUrl;
+          a.click();
           resolve();
         };
         img.onerror = reject;
@@ -640,27 +826,31 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
       setExporting(false);
       setShowExportMenu(false);
     }
-  }, []);
+  }, [buildExportClone, selectedPerson]);
 
   const printView = useCallback(() => {
-    if (!svgRef.current || !gRef.current) return;
-    const bounds = gRef.current.getBBox();
-    const pad = 60;
-    const clone = svgRef.current.cloneNode(true) as SVGSVGElement;
-    clone.setAttribute('viewBox', `${bounds.x - pad} ${bounds.y - pad} ${bounds.width + pad * 2} ${bounds.height + pad * 2}`);
+    const result = buildExportClone({ includeRelList: true });
+    if (!result) return;
+    const { clone } = result;
     clone.setAttribute('width', '100%');
-    clone.setAttribute('height', '100%');
-    const gElem = clone.querySelector('.graph');
-    if (gElem) gElem.removeAttribute('transform');
+    clone.setAttribute('height', '');
+    clone.style.maxHeight = '100vh';
+
+    const title = selectedPerson
+      ? `Family Tree — ${selectedPerson.person.name}`
+      : 'Family Tree';
 
     const printWindow = window.open('', '_blank');
     if (printWindow) {
       printWindow.document.write(`
-        <!DOCTYPE html><html><head><title>Family Tree</title>
+        <!DOCTYPE html><html><head><title>${title}</title>
         <style>
-          body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: white; }
-          svg { max-width: 100%; max-height: 100vh; }
-          @media print { body { margin: 0; } svg { width: 100%; height: auto; } }
+          body { margin: 20px; background: white; font-family: system-ui, -apple-system, sans-serif; }
+          svg { width: 100%; height: auto; max-height: 90vh; display: block; }
+          @media print {
+            body { margin: 10px; }
+            svg { width: 100%; height: auto; page-break-inside: avoid; }
+          }
         </style>
         </head><body>${clone.outerHTML}</body></html>
       `);
@@ -668,7 +858,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
       setTimeout(() => printWindow.print(), 500);
     }
     setShowExportMenu(false);
-  }, []);
+  }, [buildExportClone, selectedPerson]);
 
   const handleSearchSelect = (personId: string) => {
     setSearchOpen(false);
@@ -848,9 +1038,14 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
             <Download className="w-4 h-4" />
           </button>
           {showExportMenu && (
-            <div className="absolute right-0 mt-1 bg-white border rounded-lg shadow-lg py-1 w-44 z-50">
+            <div className="absolute right-0 mt-1 bg-white border rounded-lg shadow-lg py-1 w-56 z-50">
+              {selectedPerson && (
+                <div className="px-3 py-1.5 text-xs text-indigo-600 font-medium border-b border-gray-100">
+                  Exporting: {selectedPerson.person.name}'s connections
+                </div>
+              )}
               <button onClick={printView} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
-                <Printer className="w-4 h-4" /> Print / PDF
+                <Printer className="w-4 h-4" /> Print / Save as PDF
               </button>
               <button onClick={exportPNG} disabled={exporting} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50">
                 <FileDown className="w-4 h-4" /> Export as PNG
@@ -858,6 +1053,11 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
               <button onClick={exportSVG} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
                 <FileDown className="w-4 h-4" /> Export as SVG
               </button>
+              {!selectedPerson && (
+                <div className="px-3 py-1.5 text-xs text-gray-400 border-t border-gray-100">
+                  Tip: Click a person first to export their family view
+                </div>
+              )}
             </div>
           )}
         </div>
