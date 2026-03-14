@@ -88,8 +88,40 @@ export const useFamilyTree = () => {
     }));
   }, []);
 
+  // Merge: move all relationships from deleteId to keepId, then remove deleteId
+  const mergePeople = useCallback((keepId: string, deleteId: string) => {
+    setState(prev => {
+      // Repoint all relationships from deleteId to keepId
+      let updatedRels = prev.relationships.map(rel => {
+        let r = { ...rel };
+        if (r.personId === deleteId) r.personId = keepId;
+        if (r.relatedPersonId === deleteId) r.relatedPersonId = keepId;
+        return r;
+      });
+
+      // Remove self-referencing relationships
+      updatedRels = updatedRels.filter(r => r.personId !== r.relatedPersonId);
+
+      // Deduplicate (same personId + relatedPersonId + type)
+      const seen = new Set<string>();
+      updatedRels = updatedRels.filter(r => {
+        const key = `${r.personId}-${r.relatedPersonId}-${r.relationshipType}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+      return {
+        ...prev,
+        people: prev.people.filter(p => p.id !== deleteId),
+        relationships: updatedRels,
+        rootPersonId: prev.rootPersonId === deleteId ? keepId : prev.rootPersonId,
+      };
+    });
+  }, []);
+
   const addRelationship = useCallback((
-    personId: string, 
+    personId: string,
     relatedPersonId: string, 
     relationshipType: RelationshipType,
     isInferred = false
@@ -602,6 +634,7 @@ export const useFamilyTree = () => {
     setPeople,
     setRelationships,
     loadData,
+    mergePeople,
   };
 };
 

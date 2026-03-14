@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { PersonForm } from '@/components/PersonForm';
 import { RelationshipManager } from '@/components/RelationshipManager';
 import { DataUpload } from '@/components/DataUpload';
+import { DuplicateManager } from '@/components/DuplicateManager';
 import { ReviewQueue } from '@/components/ReviewQueue';
 import { D3NetworkGraph } from '@/components/D3NetworkGraph';
 import { Person, Relationship, RelationshipType } from '@/types/family';
@@ -91,6 +92,21 @@ const Index = () => {
       setTimeout(() => localTree.inferRelationships(), 100);
       toast({ title: 'Relationships Imported', description: `${importedRels.length} relationships added. Inferring more...` });
     }
+  };
+
+  const handleMergePeople = (keepId: string, deleteId: string) => {
+    if (!useCloud) {
+      const keepPerson = people.find(p => p.id === keepId);
+      const deletePerson = people.find(p => p.id === deleteId);
+      localTree.mergePeople(keepId, deleteId);
+      toast({ title: 'Merged', description: `"${deletePerson?.name}" merged into "${keepPerson?.name}". Relationships transferred.` });
+    }
+  };
+
+  const handleDeletePerson = async (personId: string) => {
+    const person = people.find(p => p.id === personId);
+    await deletePerson(personId);
+    toast({ title: 'Deleted', description: `${person?.name} removed.` });
   };
 
   const handleInferRelationships = () => {
@@ -182,7 +198,7 @@ const Index = () => {
               Relationships
             </TabsTrigger>
             <TabsTrigger value="import" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
-              Import
+              Import / Cleanup
             </TabsTrigger>
             {showReviewTab && (
               <TabsTrigger value="review" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
@@ -290,8 +306,8 @@ const Index = () => {
             />
           </TabsContent>
 
-          {/* Import */}
-          <TabsContent value="import">
+          {/* Import / Cleanup */}
+          <TabsContent value="import" className="space-y-6">
             <DataUpload
               people={people}
               relationships={relationships}
@@ -299,6 +315,14 @@ const Index = () => {
               onImportRelationships={handleImportRelationships}
               onExportData={() => {}}
             />
+            {people.length > 0 && (
+              <DuplicateManager
+                people={people}
+                relationships={relationships}
+                onMerge={handleMergePeople}
+                onDelete={handleDeletePerson}
+              />
+            )}
           </TabsContent>
 
           {/* Review Queue (Admin only) */}
