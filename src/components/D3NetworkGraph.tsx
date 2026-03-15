@@ -557,7 +557,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     new Set(['parent_child', 'spouse'])
   );
   const [showExportMenu, setShowExportMenu] = useState(false);
-  const [showLegend, setShowLegend] = useState(true);
+  const [showLegend, setShowLegend] = useState(false);
 
   useEffect(() => {
     const handler = () => setContextMenu(prev => ({ ...prev, visible: false }));
