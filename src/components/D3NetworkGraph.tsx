@@ -190,10 +190,19 @@ function getSpousePairs(relationships: Relationship[]): Map<string, string> {
 }
 
 // ══════════════════════════════════════════════════════════
-// ── HIERARCHICAL LAYOUT (the big new feature) ──
+// ── HIERARCHICAL LAYOUT (subtree-width approach) ──
 // ══════════════════════════════════════════════════════════
 
 interface HierPos { x: number; y: number; gen: number }
+
+interface LayoutUnit {
+  id: string;
+  primary: string;
+  spouse: string | null;
+  gen: number;
+  childUnits: LayoutUnit[];
+  subtreeWidth: number;
+}
 
 function computeHierarchicalLayout(
   rootId: string,
@@ -204,8 +213,14 @@ function computeHierarchicalLayout(
   const ROW_SPACING = 280;
   const UNIT_WIDTH = 280;
   const SPOUSE_GAP = 140;
+  const UNIT_GAP = 60;
 
-  // Build adjacency
+  const nameOf = (id: string): string => {
+    // lightweight name lookup for debug only
+    return id.slice(0, 8);
+  };
+
+  // ── Build adjacency ──
   const parentsOf = new Map<string, string[]>();
   const childrenOf = new Map<string, string[]>();
   const spouseOf = new Map<string, string>();
@@ -227,7 +242,7 @@ function computeHierarchicalLayout(
     }
   });
 
-  // BFS from root to assign generations and track hop distance from root
+  // ── BFS from root to assign generations + hop distance ──
   const genMap: Record<string, number> = {};
   const bfsDistance: Record<string, number> = {};
   const visited = new Set<string>();
@@ -240,143 +255,203 @@ function computeHierarchicalLayout(
     genMap[id] = gen;
     bfsDistance[id] = dist;
 
-    // Spouse same gen, distance +1
     const sp = spouseOf.get(id);
     if (sp && !visited.has(sp)) bfsQueue.unshift({ id: sp, gen, dist: dist + 1 });
-
-    // Parents go up
     (parentsOf.get(id) ?? []).forEach(pid => {
       if (!visited.has(pid)) bfsQueue.push({ id: pid, gen: gen - 1, dist: dist + 1 });
     });
-
-    // Children go down
     (childrenOf.get(id) ?? []).forEach(cid => {
       if (!visited.has(cid)) bfsQueue.push({ id: cid, gen: gen + 1, dist: dist + 1 });
     });
   }
 
-  // Group by generation
-  const genGroups = new Map<number, string[]>();
-  Object.entries(genMap).forEach(([id, gen]) => {
-    if (!genGroups.has(gen)) genGroups.set(gen, []);
-    genGroups.get(gen)!.push(id);
-  });
+  // ── Build family units (person + optional spouse) ──
+  const unitOf = new Map<string, LayoutUnit>();
+  const allUnits: LayoutUnit[] = [];
+  const assigned = new Set<string>();
 
-  // ── Top-down placement: place each generation's children under their parents ──
-  const positions: Record<string, HierPos> = {};
-  const placed = new Set<string>();
-  const sortedGens = Array.from(genGroups.keys()).sort((a, b) => a - b);
-  const GAP = 80;
+  const allPeopleIds = Object.keys(genMap).sort((a, b) => (bfsDistance[a] ?? 999) - (bfsDistance[b] ?? 999));
 
-  // Helper: build units (person + optional spouse) from a member list
-  const buildUnits = (members: string[]) => {
-    const units: { primary: string; spouse: string | null }[] = [];
-    members.forEach(id => {
-      if (placed.has(id)) return;
-      placed.add(id);
-      const sp = spouseOf.get(id);
-      let spouseId: string | null = null;
-      if (sp && genMap[sp] !== undefined && !placed.has(sp)) {
-        spouseId = sp;
-        placed.add(sp);
-      }
-      units.push({ primary: id, spouse: spouseId });
-    });
-    return units;
-  };
+  for (const id of allPeopleIds) {
+    if (assigned.has(id)) continue;
+    assigned.add(id);
 
-  // Helper: place units centered around a given X
-  const placeUnits = (units: { primary: string; spouse: string | null }[], aroundX: number, rowY: number, gen: number) => {
-    const totalWidth = units.length * UNIT_WIDTH + (units.length - 1) * GAP;
-    const startX = aroundX - totalWidth / 2;
-    units.forEach((unit, i) => {
-      const unitCenterX = startX + i * (UNIT_WIDTH + GAP) + UNIT_WIDTH / 2;
-      if (unit.spouse) {
-        positions[unit.primary] = { x: unitCenterX - SPOUSE_GAP / 2, y: rowY, gen };
-        positions[unit.spouse] = { x: unitCenterX + SPOUSE_GAP / 2, y: rowY, gen };
-      } else {
-        positions[unit.primary] = { x: unitCenterX, y: rowY, gen };
-      }
-    });
-  };
-
-  // Process the topmost (first) generation — place evenly centered
-  const firstGen = sortedGens[0];
-  const firstMembers = [...(genGroups.get(firstGen) ?? [])].sort((a, b) => (bfsDistance[a] ?? 999) - (bfsDistance[b] ?? 999));
-  const firstUnits = buildUnits(firstMembers);
-  placeUnits(firstUnits, centerX, centerY + firstGen * ROW_SPACING, firstGen);
-
-  // Process subsequent generations: group children by their parent's position
-  for (let gi = 1; gi < sortedGens.length; gi++) {
-    const gen = sortedGens[gi];
-    const members = genGroups.get(gen)!;
-    const rowY = centerY + gen * ROW_SPACING;
-
-    // Group members by their parent couple
-    const parentGroups = new Map<string, string[]>();
-    const orphans: string[] = [];
-
-    members.forEach(id => {
-      if (placed.has(id)) return;
-      const parents = (parentsOf.get(id) ?? []).filter(p => p in positions);
-      if (parents.length === 0) {
-        orphans.push(id);
-        return;
-      }
-      // Couple key from parents already in positions
-      const coupleKey = parents.length >= 2 ? [...parents].sort().join('-') : parents[0];
-      if (!parentGroups.has(coupleKey)) parentGroups.set(coupleKey, []);
-      parentGroups.get(coupleKey)!.push(id);
-    });
-
-    // Sort parent groups by parent's X position (left-to-right)
-    const sortedParentGroups = Array.from(parentGroups.entries()).sort(([keyA], [keyB]) => {
-      const aIds = keyA.split('-');
-      const bIds = keyB.split('-');
-      const aX = aIds.reduce((s, id) => s + (positions[id]?.x ?? 0), 0) / aIds.length;
-      const bX = bIds.reduce((s, id) => s + (positions[id]?.x ?? 0), 0) / bIds.length;
-      return aX - bX;
-    });
-
-    // Place each group of children centered under their parents
-    sortedParentGroups.forEach(([coupleKey, children]) => {
-      const parentIds = coupleKey.split('-');
-      const parentMidX = parentIds.reduce((s, id) => s + (positions[id]?.x ?? centerX), 0) / parentIds.length;
-      // Sort children: closest to root first
-      children.sort((a, b) => (bfsDistance[a] ?? 999) - (bfsDistance[b] ?? 999));
-      const units = buildUnits(children);
-      placeUnits(units, parentMidX, rowY, gen);
-    });
-
-    // Place orphans (no parent in tree) at the end
-    if (orphans.length > 0) {
-      const allXs = Object.values(positions).map(p => p.x);
-      const rightEdge = allXs.length > 0 ? Math.max(...allXs) + UNIT_WIDTH + GAP : centerX;
-      const units = buildUnits(orphans);
-      placeUnits(units, rightEdge, rowY, gen);
+    const sp = spouseOf.get(id);
+    let spouseId: string | null = null;
+    if (sp && sp in genMap && !assigned.has(sp)) {
+      spouseId = sp;
+      assigned.add(sp);
     }
+
+    const unit: LayoutUnit = {
+      id: spouseId ? [id, spouseId].sort().join('-') : id,
+      primary: id,
+      spouse: spouseId,
+      gen: genMap[id],
+      childUnits: [],
+      subtreeWidth: UNIT_WIDTH,
+    };
+
+    allUnits.push(unit);
+    unitOf.set(id, unit);
+    if (spouseId) unitOf.set(spouseId, unit);
   }
 
-  // Resolve horizontal overlaps within each generation
-  sortedGens.forEach(gen => {
-    const members = (genGroups.get(gen) ?? []).filter(id => id in positions);
-    const sorted = members.sort((a, b) => positions[a].x - positions[b].x);
+  // ── Link child units to parent units ──
+  // Each child unit is owned by exactly ONE parent unit (closest to BFS root)
+  const parentUnitOf = new Map<LayoutUnit, LayoutUnit>();
 
-    for (let i = 1; i < sorted.length; i++) {
-      const prev = sorted[i - 1];
-      const curr = sorted[i];
-      const gap = positions[curr].x - positions[prev].x;
-      const areSpouses = spouseOf.get(prev) === curr || spouseOf.get(curr) === prev;
-      const minGap = areSpouses ? SPOUSE_GAP : 160;
-      if (gap < minGap) {
-        const push = (minGap - gap) / 2;
-        // Push current and everything to its right forward
-        for (let j = i; j < sorted.length; j++) {
-          positions[sorted[j]].x += push * 2;
+  for (const unit of allUnits) {
+    const members = [unit.primary];
+    if (unit.spouse) members.push(unit.spouse);
+
+    const childIds = new Set<string>();
+    for (const pid of members) {
+      for (const cid of (childrenOf.get(pid) ?? [])) {
+        if (cid in genMap) childIds.add(cid);
+      }
+    }
+
+    const childUnitSet = new Set<LayoutUnit>();
+    for (const cid of childIds) {
+      const cu = unitOf.get(cid);
+      if (cu && cu !== unit) childUnitSet.add(cu);
+    }
+
+    for (const cu of childUnitSet) {
+      const existing = parentUnitOf.get(cu);
+      if (!existing) {
+        parentUnitOf.set(cu, unit);
+        unit.childUnits.push(cu);
+      } else {
+        const existingDist = Math.min(
+          bfsDistance[existing.primary] ?? 999,
+          existing.spouse ? (bfsDistance[existing.spouse] ?? 999) : 999
+        );
+        const newDist = Math.min(
+          bfsDistance[unit.primary] ?? 999,
+          unit.spouse ? (bfsDistance[unit.spouse] ?? 999) : 999
+        );
+        if (newDist < existingDist) {
+          existing.childUnits = existing.childUnits.filter(c => c !== cu);
+          parentUnitOf.set(cu, unit);
+          unit.childUnits.push(cu);
         }
       }
     }
-  });
+  }
+
+  // Sort child units by BFS distance (closer to root = left)
+  for (const unit of allUnits) {
+    unit.childUnits.sort((a, b) => (bfsDistance[a.primary] ?? 999) - (bfsDistance[b.primary] ?? 999));
+  }
+
+  // ── Bottom-up: compute subtree widths ──
+  const unitsByGen = new Map<number, LayoutUnit[]>();
+  for (const unit of allUnits) {
+    if (!unitsByGen.has(unit.gen)) unitsByGen.set(unit.gen, []);
+    unitsByGen.get(unit.gen)!.push(unit);
+  }
+
+  const gensSorted = [...unitsByGen.keys()].sort((a, b) => b - a);
+  for (const gen of gensSorted) {
+    for (const unit of unitsByGen.get(gen)!) {
+      if (unit.childUnits.length === 0) {
+        unit.subtreeWidth = UNIT_WIDTH;
+      } else {
+        const childrenTotalWidth = unit.childUnits.reduce((sum, cu) => sum + cu.subtreeWidth, 0)
+          + (unit.childUnits.length - 1) * UNIT_GAP;
+        unit.subtreeWidth = Math.max(UNIT_WIDTH, childrenTotalWidth);
+      }
+    }
+  }
+
+  // ── Top-down: place units ──
+  const positions: Record<string, HierPos> = {};
+  const placedUnits = new Set<string>();
+
+  function placeUnit(unit: LayoutUnit, cx: number) {
+    if (placedUnits.has(unit.id)) return;
+    placedUnits.add(unit.id);
+
+    const rowY = centerY + unit.gen * ROW_SPACING;
+    if (unit.spouse) {
+      positions[unit.primary] = { x: cx - SPOUSE_GAP / 2, y: rowY, gen: unit.gen };
+      positions[unit.spouse] = { x: cx + SPOUSE_GAP / 2, y: rowY, gen: unit.gen };
+    } else {
+      positions[unit.primary] = { x: cx, y: rowY, gen: unit.gen };
+    }
+
+    if (unit.childUnits.length > 0) {
+      const totalChildWidth = unit.childUnits.reduce((sum, cu) => sum + cu.subtreeWidth, 0)
+        + (unit.childUnits.length - 1) * UNIT_GAP;
+      let childStartX = cx - totalChildWidth / 2;
+
+      for (const childUnit of unit.childUnits) {
+        const childCx = childStartX + childUnit.subtreeWidth / 2;
+        placeUnit(childUnit, childCx);
+        childStartX += childUnit.subtreeWidth + UNIT_GAP;
+      }
+    }
+  }
+
+  // ── Find top-level units and in-law bridges ──
+  const topLevelUnits = allUnits.filter(u => !parentUnitOf.has(u));
+  topLevelUnits.sort((a, b) => (bfsDistance[a.primary] ?? 999) - (bfsDistance[b.primary] ?? 999));
+
+  const mainTree = topLevelUnits[0];
+
+  // Place main tree centered
+  if (mainTree) {
+    placeUnit(mainTree, centerX);
+  }
+
+  // Collect main tree members to find bridge connections
+  const mainTreeIds = new Set<string>();
+  function collectIds(unit: LayoutUnit) {
+    mainTreeIds.add(unit.primary);
+    if (unit.spouse) mainTreeIds.add(unit.spouse);
+    unit.childUnits.forEach(collectIds);
+  }
+  if (mainTree) collectIds(mainTree);
+
+  // Place secondary top-level units adjacent to their bridge person
+  for (let i = 1; i < topLevelUnits.length; i++) {
+    const unit = topLevelUnits[i];
+    if (placedUnits.has(unit.id)) continue;
+
+    // Find bridge: someone in this subtree whose child is in the main tree
+    const inlawMembers: string[] = [];
+    function collectInlaw(u: LayoutUnit) {
+      inlawMembers.push(u.primary);
+      if (u.spouse) inlawMembers.push(u.spouse);
+      u.childUnits.forEach(collectInlaw);
+    }
+    collectInlaw(unit);
+
+    let bridgePersonX: number | null = null;
+    for (const pid of inlawMembers) {
+      for (const cid of (childrenOf.get(pid) ?? [])) {
+        if (mainTreeIds.has(cid) && positions[cid]) {
+          bridgePersonX = positions[cid].x;
+          break;
+        }
+      }
+      if (bridgePersonX !== null) break;
+    }
+
+    if (bridgePersonX !== null) {
+      placeUnit(unit, bridgePersonX + unit.subtreeWidth / 2 + UNIT_GAP);
+    } else {
+      const allXs = Object.values(positions).map(p => p.x);
+      const rightEdge = allXs.length > 0 ? Math.max(...allXs) + UNIT_WIDTH : centerX;
+      placeUnit(unit, rightEdge + unit.subtreeWidth / 2);
+    }
+  }
+
+  // ── Debug logging ──
+  console.log('=== Hierarchical Layout (subtree-width) ===');
+  console.log(`Root: ${nameOf(rootId)}, ${allUnits.length} units, ${Object.keys(positions).length} positioned`);
 
   return positions;
 }
