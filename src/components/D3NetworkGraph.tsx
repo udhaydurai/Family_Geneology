@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as d3 from 'd3';
 import { Person, Relationship, RelationshipType } from '@/types/family';
-import { ZoomIn, ZoomOut, Download, Search, X, Printer, FileDown, List } from 'lucide-react';
+import { ZoomIn, ZoomOut, Download, Search, X, Printer, FileDown, List, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface D3NetworkGraphProps {
   people: Person[];
@@ -558,6 +558,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
   );
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showLegend, setShowLegend] = useState(false);
+  const [detailExpanded, setDetailExpanded] = useState(true);
 
   useEffect(() => {
     const handler = () => setContextMenu(prev => ({ ...prev, visible: false }));
@@ -1256,38 +1257,46 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
         <div className="mt-2 pt-2 border-t border-gray-100 text-gray-400">Click a name to see your roots</div>
       </div>}
 
-      {/* Selected Person Detail Panel */}
+      {/* Selected Person Detail Panel — collapsible */}
       {selectedPerson && (
-        <div className="absolute top-12 right-3 bg-white/95 backdrop-blur-sm rounded-lg shadow-lg border w-56 max-h-[280px] overflow-y-auto z-20 text-[11px]">
-          <div className="sticky top-0 bg-white border-b px-2.5 py-1.5 flex items-center justify-between">
-            <div className="min-w-0">
-              <div className="font-semibold text-xs truncate">{selectedPerson.person.name}</div>
-              <div className="text-[10px] text-muted-foreground capitalize truncate">
-                {selectedPerson.person.gender}
-                {selectedPerson.person.birthDate && ` · b. ${new Date(selectedPerson.person.birthDate).getFullYear()}`}
+        <div className="absolute top-12 right-3 bg-white/95 backdrop-blur-sm rounded-lg shadow-lg border w-56 z-20 text-[11px]">
+          <div className="bg-white rounded-t-lg px-2.5 py-1.5 flex items-center justify-between cursor-pointer" onClick={() => setDetailExpanded(v => !v)}>
+            <div className="min-w-0 flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-indigo-500 shrink-0" />
+              <span className="font-semibold text-xs truncate">{selectedPerson.person.name}</span>
+            </div>
+            <div className="flex items-center gap-0.5 shrink-0">
+              {detailExpanded ? <ChevronUp className="w-3 h-3 text-gray-400" /> : <ChevronDown className="w-3 h-3 text-gray-400" />}
+              <button onClick={(e) => { e.stopPropagation(); setSelectedPerson(null); }} className="p-0.5 hover:bg-gray-100 rounded"><X className="w-3 h-3" /></button>
+            </div>
+          </div>
+          {detailExpanded && (
+            <div className="border-t max-h-[240px] overflow-y-auto">
+              <div className="px-2.5 py-1.5">
+                <div className="text-[10px] text-muted-foreground capitalize mb-1">
+                  {selectedPerson.person.gender}
+                  {selectedPerson.person.birthDate && ` · b. ${new Date(selectedPerson.person.birthDate).getFullYear()}`}
+                </div>
+                <div className="text-[10px] font-medium text-gray-500 mb-1">Relationships ({selectedPerson.relationships.length})</div>
+                {selectedPerson.relationships.length === 0 ? (
+                  <div className="text-[10px] text-gray-400 py-1">No relationships found</div>
+                ) : (
+                  <div className="space-y-0.5">
+                    {selectedPerson.relationships.map((rel, i) => {
+                      const cat = getCategoryForType(rel.type);
+                      return (
+                        <div key={i} className="flex items-center gap-1.5 py-0.5">
+                          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: cat?.color ?? '#999' }} />
+                          <span className="text-gray-500 w-14 shrink-0 capitalize">{rel.type}</span>
+                          <span className="font-medium text-gray-800 truncate">{rel.name}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
-            <button onClick={() => setSelectedPerson(null)} className="p-0.5 hover:bg-gray-100 rounded ml-1 shrink-0"><X className="w-3 h-3" /></button>
-          </div>
-          <div className="px-2.5 py-1.5">
-            <div className="text-[10px] font-medium text-gray-500 mb-1">Relationships ({selectedPerson.relationships.length})</div>
-            {selectedPerson.relationships.length === 0 ? (
-              <div className="text-[10px] text-gray-400 py-1">No relationships found</div>
-            ) : (
-              <div className="space-y-0.5">
-                {selectedPerson.relationships.map((rel, i) => {
-                  const cat = getCategoryForType(rel.type);
-                  return (
-                    <div key={i} className="flex items-center gap-1.5 py-0.5">
-                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: cat?.color ?? '#999' }} />
-                      <span className="text-gray-500 w-14 shrink-0 capitalize">{rel.type}</span>
-                      <span className="font-medium text-gray-800 truncate">{rel.name}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+          )}
         </div>
       )}
 
