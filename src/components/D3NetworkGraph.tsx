@@ -204,12 +204,20 @@ interface LayoutUnit {
   subtreeWidth: number;
 }
 
+interface InlawBridge {
+  inlawUnitId: string;
+  bridgePersonId: string;   // the spouse in the main tree
+  bridgePersonX: number;
+  bridgePersonY: number;
+}
+
 function computeHierarchicalLayout(
   rootId: string,
   relationships: Relationship[],
   centerX: number,
-  centerY: number
-): Record<string, HierPos> {
+  centerY: number,
+  collapsedUnitIds: Set<string> = new Set()
+): { positions: Record<string, HierPos>; inlawBridges: InlawBridge[] } {
   const ROW_SPACING = 280;
   const UNIT_WIDTH = 280;
   const SPOUSE_GAP = 140;
@@ -416,6 +424,8 @@ function computeHierarchicalLayout(
   if (mainTree) collectIds(mainTree);
 
   // Place secondary top-level units adjacent to their bridge person
+  const inlawBridges: InlawBridge[] = [];
+
   for (let i = 1; i < topLevelUnits.length; i++) {
     const unit = topLevelUnits[i];
     if (placedUnits.has(unit.id)) continue;
@@ -429,19 +439,34 @@ function computeHierarchicalLayout(
     }
     collectInlaw(unit);
 
-    let bridgePersonX: number | null = null;
+    let bridgePersonId: string | null = null;
     for (const pid of inlawMembers) {
       for (const cid of (childrenOf.get(pid) ?? [])) {
         if (mainTreeIds.has(cid) && positions[cid]) {
-          bridgePersonX = positions[cid].x;
+          bridgePersonId = cid;
           break;
         }
       }
-      if (bridgePersonX !== null) break;
+      if (bridgePersonId) break;
     }
 
-    if (bridgePersonX !== null) {
-      placeUnit(unit, bridgePersonX + unit.subtreeWidth / 2 + UNIT_GAP);
+    // Track bridge info for toggle rendering
+    if (bridgePersonId && positions[bridgePersonId]) {
+      inlawBridges.push({
+        inlawUnitId: unit.id,
+        bridgePersonId,
+        bridgePersonX: positions[bridgePersonId].x,
+        bridgePersonY: positions[bridgePersonId].y,
+      });
+    }
+
+    // If collapsed, skip placing entirely — nodes won't be in positions
+    if (collapsedUnitIds.has(unit.id)) {
+      continue;
+    }
+
+    if (bridgePersonId && positions[bridgePersonId]) {
+      placeUnit(unit, positions[bridgePersonId].x + unit.subtreeWidth / 2 + UNIT_GAP);
     } else {
       const allXs = Object.values(positions).map(p => p.x);
       const rightEdge = allXs.length > 0 ? Math.max(...allXs) + UNIT_WIDTH : centerX;
@@ -451,9 +476,10 @@ function computeHierarchicalLayout(
 
   // ── Debug logging ──
   console.log('=== Hierarchical Layout (subtree-width) ===');
-  console.log(`Root: ${nameOf(rootId)}, ${allUnits.length} units, ${Object.keys(positions).length} positioned`);
+  console.log(`Root: ${nameOf(rootId)}, ${allUnits.length} units, ${Object.keys(positions).length} positioned, ${collapsedUnitIds.size} collapsed`);
+  console.log('In-law bridges:', inlawBridges.map(b => `${b.inlawUnitId} via ${b.bridgePersonId}`).join(', '));
 
-  return positions;
+  return { positions, inlawBridges };
 }
 
 // ── Path drawing: orthogonal elbow connectors ──
@@ -519,6 +545,8 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
   const linkLabelSelRef = useRef<d3.Selection<any, any, any, any> | null>(null);
   const layoutModeRef = useRef<'force' | 'hierarchical'>('force');
   const isTransitioningRef = useRef(false);
+  const collapsedUnitsRef = useRef<Set<string>>(new Set());
+  const hierRootIdRef = useRef<string | null>(null);
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0 });
   const [exporting, setExporting] = useState(false);
@@ -755,24 +783,17 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
 
     nodeSelRef.current = node;
 
-    // ── Click: hierarchical layout ──
-    node.on('click', (event, d: any) => {
-      event.stopPropagation();
-      if (isTransitioningRef.current) return;
-      isTransitioningRef.current = true;
-
-      // Stop simulation
-      simulationRef.current?.stop();
-      layoutModeRef.current = 'hierarchical';
-
-      // Compute hierarchical positions
-      const hierPos = computeHierarchicalLayout(d.id, relationships, width / 2, height / 2);
+    // ── Helper: animate to a hierarchical layout result ──
+    const animateToLayout = (
+      hierPos: Record<string, HierPos>,
+      inlawBridges: InlawBridge[],
+      rootClickId: string,
+      duration: number
+    ) => {
       const connectedIds = new Set(Object.keys(hierPos));
 
-      const DURATION = 800;
-
       // Animate nodes to hierarchical positions
-      node.transition().duration(DURATION).ease(d3.easeCubicInOut)
+      node.transition().duration(duration).ease(d3.easeCubicInOut)
         .attr('transform', (n: any) => {
           const pos = hierPos[n.id];
           if (pos) {
@@ -783,30 +804,30 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
           return `translate(${n.x},${n.y})`;
         });
 
-      // Animate non-parent-child links
-      link.transition().duration(DURATION).ease(d3.easeCubicInOut)
+      // Non-parent-child links
+      link.transition().duration(duration).ease(d3.easeCubicInOut)
         .attr('d', computeLinkPath)
         .attr('opacity', (l: any) => {
           const sid = (l.source as any).id ?? l.source;
           const tid = (l.target as any).id ?? l.target;
-          return (connectedIds.has(sid) && connectedIds.has(tid)) ? 0.7 : 0.04;
+          return (connectedIds.has(sid) && connectedIds.has(tid)) ? 0.7 : 0;
         })
         .attr('stroke-width', (l: any) => {
           const sid = (l.source as any).id ?? l.source;
           const tid = (l.target as any).id ?? l.target;
-          return (connectedIds.has(sid) && connectedIds.has(tid)) ? 3 : 0.5;
+          return (connectedIds.has(sid) && connectedIds.has(tid)) ? 3 : 0;
         });
 
-      // Animate family connectors
-      familyPaths.transition().duration(DURATION).ease(d3.easeCubicInOut)
+      // Family connectors
+      familyPaths.transition().duration(duration).ease(d3.easeCubicInOut)
         .attr('d', computeFamilyPath)
         .attr('opacity', (fu: FamilyUnit) => {
           const allConnected = [...fu.parents, ...fu.children].every(id => connectedIds.has(id));
-          return allConnected ? 0.7 : 0.04;
+          return allConnected ? 0.7 : 0;
         });
 
       // Spouse labels
-      linkLabels.transition().duration(DURATION).ease(d3.easeCubicInOut)
+      linkLabels.transition().duration(duration).ease(d3.easeCubicInOut)
         .attr('x', (dd: any) => computeLinkLabelPos(dd).x)
         .attr('y', (dd: any) => computeLinkLabelPos(dd).y)
         .attr('opacity', (l: any) => {
@@ -815,13 +836,93 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
           return (connectedIds.has(sid) && connectedIds.has(tid)) ? 1 : 0;
         });
 
-      // Dim/highlight nodes
-      node.select('.main-circle').transition().duration(DURATION)
-        .attr('opacity', (n: any) => connectedIds.has(n.id) ? 1 : 0.12);
-      node.select('.name-label').transition().duration(DURATION)
-        .attr('opacity', (n: any) => connectedIds.has(n.id) ? 1 : 0.08);
+      // Nodes: visible = full opacity, not visible = fully invisible
+      node.select('.main-circle').transition().duration(duration)
+        .attr('opacity', (n: any) => connectedIds.has(n.id) ? 1 : 0);
+      node.select('.name-label').transition().duration(duration)
+        .attr('opacity', (n: any) => connectedIds.has(n.id) ? 1 : 0);
+      // Also hide initials text and birth year text for non-visible nodes
+      node.selectAll('text').each(function (this: SVGTextElement) {
+        const parentDatum = d3.select(this.parentNode as any).datum() as any;
+        const isNameLabel = d3.select(this).classed('name-label');
+        if (!isNameLabel) {
+          d3.select(this).transition().duration(duration)
+            .attr('opacity', connectedIds.has(parentDatum?.id) ? 1 : 0);
+        }
+      });
       node.select('.select-ring')
-        .attr('stroke', (n: any) => n.id === d.id ? '#fbbf24' : connectedIds.has(n.id) ? '#fbbf2480' : 'transparent');
+        .attr('stroke', (n: any) => n.id === rootClickId ? '#fbbf24' : connectedIds.has(n.id) ? '#fbbf2480' : 'transparent');
+
+      // ── Render in-law toggles ──
+      g.selectAll('.inlaw-toggle').remove();
+
+      inlawBridges.forEach(bridge => {
+        const isCollapsed = collapsedUnitsRef.current.has(bridge.inlawUnitId);
+        const toggleG = g.append('g')
+          .attr('class', 'inlaw-toggle')
+          .attr('transform', `translate(${bridge.bridgePersonX + 55},${bridge.bridgePersonY - 45})`)
+          .style('cursor', 'pointer')
+          .on('click', (evt: any) => {
+            evt.stopPropagation();
+            if (isTransitioningRef.current) return;
+            isTransitioningRef.current = true;
+
+            const collapsed = collapsedUnitsRef.current;
+            if (collapsed.has(bridge.inlawUnitId)) {
+              collapsed.delete(bridge.inlawUnitId);
+            } else {
+              collapsed.add(bridge.inlawUnitId);
+            }
+
+            const result = computeHierarchicalLayout(
+              hierRootIdRef.current!, relationships, width / 2, height / 2, collapsed
+            );
+            animateToLayout(result.positions, result.inlawBridges, hierRootIdRef.current!, 500);
+
+            setTimeout(() => {
+              fitToView();
+              isTransitioningRef.current = false;
+            }, 600);
+          });
+
+        toggleG.append('circle')
+          .attr('r', 10)
+          .attr('fill', isCollapsed ? '#6366f1' : '#e2e8f0')
+          .attr('stroke', '#6366f1')
+          .attr('stroke-width', 1.5);
+
+        toggleG.append('text')
+          .attr('text-anchor', 'middle')
+          .attr('dy', '0.35em')
+          .attr('font-size', '14px')
+          .attr('font-weight', '700')
+          .attr('fill', isCollapsed ? '#fff' : '#6366f1')
+          .attr('pointer-events', 'none')
+          .text(isCollapsed ? '+' : '−');
+      });
+    };
+
+    // ── Click: hierarchical layout ──
+    node.on('click', (event, d: any) => {
+      event.stopPropagation();
+      if (isTransitioningRef.current) return;
+      isTransitioningRef.current = true;
+
+      // Stop simulation
+      simulationRef.current?.stop();
+      layoutModeRef.current = 'hierarchical';
+      hierRootIdRef.current = d.id;
+
+      // First pass: find in-law branches, then auto-collapse them
+      const firstPass = computeHierarchicalLayout(d.id, relationships, width / 2, height / 2);
+      collapsedUnitsRef.current = new Set(firstPass.inlawBridges.map(b => b.inlawUnitId));
+
+      // Second pass: compute with in-laws collapsed (skip if no in-laws)
+      const result = collapsedUnitsRef.current.size > 0
+        ? computeHierarchicalLayout(d.id, relationships, width / 2, height / 2, collapsedUnitsRef.current)
+        : firstPass;
+
+      animateToLayout(result.positions, result.inlawBridges, d.id, 800);
 
       // Detail panel
       const person = people.find(p => p.id === d.id);
@@ -833,7 +934,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
       setTimeout(() => {
         fitToView();
         isTransitioningRef.current = false;
-      }, DURATION + 100);
+      }, 900);
     });
 
     // ── Background click: return to force layout ──
@@ -843,13 +944,21 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
       if (layoutModeRef.current === 'hierarchical') {
         isTransitioningRef.current = true;
         layoutModeRef.current = 'force';
+        hierRootIdRef.current = null;
+        collapsedUnitsRef.current = new Set();
+
+        // Remove in-law toggles
+        g.selectAll('.inlaw-toggle').remove();
 
         // Unpin all nodes
         nodes.forEach((n: any) => { n.fx = null; n.fy = null; });
 
-        // Reset visual state
+        // Reset visual state — all elements back to full opacity
         node.select('.main-circle').transition().duration(400).attr('opacity', 1);
         node.select('.name-label').transition().duration(400).attr('opacity', 1);
+        node.selectAll('text').each(function (this: SVGTextElement) {
+          d3.select(this).transition().duration(400).attr('opacity', 1);
+        });
         node.select('.select-ring').attr('stroke', 'transparent');
         link.transition().duration(400)
           .attr('opacity', 0.55)
