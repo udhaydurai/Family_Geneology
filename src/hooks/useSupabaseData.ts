@@ -78,13 +78,7 @@ export const useSupabaseData = () => {
   }, []);
 
   const fetchPendingChanges = useCallback(async () => {
-    if (!supabase) return;
-    const { data } = await supabase
-      .from('pending_changes')
-      .select('*')
-      .eq('status', 'pending')
-      .order('created_at', { ascending: false });
-    if (data) setPendingChanges(data as PendingChange[]);
+    // No pending_changes table in simple mode
   }, []);
 
   useEffect(() => {
@@ -93,8 +87,7 @@ export const useSupabaseData = () => {
       return;
     }
     fetchData();
-    fetchPendingChanges();
-  }, [fetchData, fetchPendingChanges]);
+  }, [fetchData]);
 
   const submitChange = useCallback(async (
     changeType: PendingChange['change_type'],
@@ -121,7 +114,7 @@ export const useSupabaseData = () => {
     const id = `person_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const newPerson = { ...person, id };
 
-    if (isAdmin && supabase) {
+    if (supabase) {
       const { error } = await supabase.from('people').insert(toSnakeCase(newPerson));
       if (error) {
         toast({ title: 'Error', description: error.message, variant: 'destructive' });
@@ -136,7 +129,7 @@ export const useSupabaseData = () => {
   }, [isAdmin, toast, submitChange]);
 
   const updatePerson = useCallback(async (personId: string, updates: Partial<Person>) => {
-    if (isAdmin && supabase) {
+    if (supabase) {
       const snakeUpdates: Record<string, unknown> = {};
       if (updates.name !== undefined) snakeUpdates.name = updates.name;
       if (updates.firstName !== undefined) snakeUpdates.first_name = updates.firstName;
@@ -162,7 +155,7 @@ export const useSupabaseData = () => {
   }, [isAdmin, toast, submitChange]);
 
   const deletePerson = useCallback(async (personId: string) => {
-    if (isAdmin && supabase) {
+    if (supabase) {
       const { error } = await supabase.from('people').delete().eq('id', personId);
       if (error) {
         toast({ title: 'Error', description: error.message, variant: 'destructive' });
@@ -173,7 +166,7 @@ export const useSupabaseData = () => {
     } else {
       await submitChange('delete_person', { id: personId });
     }
-  }, [isAdmin, toast, submitChange]);
+  }, [toast, submitChange]);
 
   const addRelationship = useCallback(async (
     personId: string,
@@ -183,7 +176,7 @@ export const useSupabaseData = () => {
     const id = `rel_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const rel: Relationship = { id, personId, relatedPersonId, relationshipType, confidence: 1.0 };
 
-    if (isAdmin && supabase) {
+    if (supabase) {
       const { error } = await supabase.from('relationships').insert(relToSnake(rel));
       if (error) {
         toast({ title: 'Error', description: error.message, variant: 'destructive' });
@@ -201,10 +194,10 @@ export const useSupabaseData = () => {
     } else {
       await submitChange('add_relationship', { personId, relatedPersonId, relationshipType });
     }
-  }, [isAdmin, toast, submitChange]);
+  }, [toast, submitChange]);
 
   const deleteRelationship = useCallback(async (relationshipId: string) => {
-    if (isAdmin && supabase) {
+    if (supabase) {
       const { error } = await supabase.from('relationships').delete().eq('id', relationshipId);
       if (error) {
         toast({ title: 'Error', description: error.message, variant: 'destructive' });
@@ -214,81 +207,11 @@ export const useSupabaseData = () => {
     } else {
       await submitChange('delete_relationship', { id: relationshipId });
     }
-  }, [isAdmin, toast, submitChange]);
+  }, [toast, submitChange]);
 
-  const approveChange = useCallback(async (changeId: string) => {
-    if (!supabase || !isAdmin) return;
-
-    const change = pendingChanges.find(c => c.id === changeId);
-    if (!change) return;
-
-    const payload = change.payload;
-
-    let success = false;
-    switch (change.change_type) {
-      case 'add_person': {
-        const { error } = await supabase.from('people').insert(payload);
-        success = !error;
-        break;
-      }
-      case 'edit_person': {
-        const { id, ...updates } = payload;
-        const { error } = await supabase.from('people').update(updates).eq('id', id as string);
-        success = !error;
-        break;
-      }
-      case 'delete_person': {
-        const { error } = await supabase.from('people').delete().eq('id', payload.id as string);
-        success = !error;
-        break;
-      }
-      case 'add_relationship': {
-        const id = `rel_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        const { error } = await supabase.from('relationships').insert({
-          id,
-          person_id: payload.personId,
-          related_person_id: payload.relatedPersonId,
-          relationship_type: payload.relationshipType,
-          confidence: 1.0,
-        });
-        success = !error;
-        break;
-      }
-      case 'delete_relationship': {
-        const { error } = await supabase.from('relationships').delete().eq('id', payload.id as string);
-        success = !error;
-        break;
-      }
-    }
-
-    if (success) {
-      await supabase.from('pending_changes').update({
-        status: 'approved',
-        reviewed_by: user?.id,
-        reviewed_at: new Date().toISOString(),
-      }).eq('id', changeId);
-
-      toast({ title: 'Approved', description: 'Change has been applied.' });
-      fetchData();
-      fetchPendingChanges();
-    } else {
-      toast({ title: 'Error', description: 'Failed to apply change.', variant: 'destructive' });
-    }
-  }, [isAdmin, pendingChanges, user, toast, fetchData, fetchPendingChanges]);
-
-  const rejectChange = useCallback(async (changeId: string, note?: string) => {
-    if (!supabase || !isAdmin) return;
-
-    await supabase.from('pending_changes').update({
-      status: 'rejected',
-      reviewed_by: user?.id,
-      review_note: note ?? null,
-      reviewed_at: new Date().toISOString(),
-    }).eq('id', changeId);
-
-    toast({ title: 'Rejected', description: 'Change has been rejected.' });
-    fetchPendingChanges();
-  }, [isAdmin, user, toast, fetchPendingChanges]);
+  // No-ops in simple mode (no pending_changes table)
+  const approveChange = useCallback(async (_changeId: string) => {}, []);
+  const rejectChange = useCallback(async (_changeId: string, _note?: string) => {}, []);
 
   const setPeopleDirectly = useCallback((newPeople: Person[]) => {
     setPeople(newPeople);

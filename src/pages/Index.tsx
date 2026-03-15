@@ -31,7 +31,8 @@ const Index = () => {
   const supabaseData = useSupabaseData();
   const { toast } = useToast();
 
-  const useCloud = isSupabaseConfigured && isAuthenticated;
+  // Use Supabase if configured (no auth required in simple mode)
+  const useCloud = isSupabaseConfigured;
   const people = useCloud ? supabaseData.people : localTree.people;
   const relationships = useCloud ? supabaseData.relationships : localTree.relationships;
   const pendingChanges = useCloud ? supabaseData.pendingChanges : [];
