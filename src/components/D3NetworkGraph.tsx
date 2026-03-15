@@ -1259,7 +1259,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
 
       {/* Selected Person Detail Panel — collapsible */}
       {selectedPerson && (
-        <div className="absolute top-12 right-3 bg-white/95 backdrop-blur-sm rounded-lg shadow-lg border w-56 z-20 text-[11px]">
+        <div className="absolute top-12 right-14 bg-white/95 backdrop-blur-sm rounded-lg shadow-lg border w-56 z-20 text-[11px]">
           <div className="bg-white rounded-t-lg px-2.5 py-1.5 flex items-center justify-between cursor-pointer" onClick={() => setDetailExpanded(v => !v)}>
             <div className="min-w-0 flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-indigo-500 shrink-0" />
