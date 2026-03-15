@@ -17,7 +17,6 @@ import { useFamilyTree } from '@/hooks/useFamilyTree';
 import { useSupabaseData } from '@/hooks/useSupabaseData';
 import { testPeople, testRelationships } from '@/data/testFamilyData';
 import {
-  Users,
   Plus,
   LogOut,
   Database,
@@ -171,9 +170,7 @@ const Index = () => {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="flex items-center gap-2">
-                  <div className="p-1.5 bg-royal-gradient rounded-md">
-                    <Users className="w-4 h-4 text-white" />
-                  </div>
+                  <img src="/veergal-logo.svg" alt="வேர்கள்" className="w-7 h-7 rounded-full" />
                   <span className="font-bold text-sm bg-royal-gradient bg-clip-text text-transparent">வேர்கள்</span>
                 </div>
                 <TabsList className="bg-white/50 backdrop-blur-sm h-8">
