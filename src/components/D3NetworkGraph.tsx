@@ -227,29 +227,31 @@ function computeHierarchicalLayout(
     }
   });
 
-  // BFS from root to assign generations (root = gen 0, parents = -1, children = +1)
+  // BFS from root to assign generations and track hop distance from root
   const genMap: Record<string, number> = {};
+  const bfsDistance: Record<string, number> = {};
   const visited = new Set<string>();
-  const bfsQueue: { id: string; gen: number }[] = [{ id: rootId, gen: 0 }];
+  const bfsQueue: { id: string; gen: number; dist: number }[] = [{ id: rootId, gen: 0, dist: 0 }];
 
   while (bfsQueue.length > 0) {
-    const { id, gen } = bfsQueue.shift()!;
+    const { id, gen, dist } = bfsQueue.shift()!;
     if (visited.has(id)) continue;
     visited.add(id);
     genMap[id] = gen;
+    bfsDistance[id] = dist;
 
-    // Spouse same gen
+    // Spouse same gen, distance +1
     const sp = spouseOf.get(id);
-    if (sp && !visited.has(sp)) bfsQueue.unshift({ id: sp, gen });
+    if (sp && !visited.has(sp)) bfsQueue.unshift({ id: sp, gen, dist: dist + 1 });
 
     // Parents go up
     (parentsOf.get(id) ?? []).forEach(pid => {
-      if (!visited.has(pid)) bfsQueue.push({ id: pid, gen: gen - 1 });
+      if (!visited.has(pid)) bfsQueue.push({ id: pid, gen: gen - 1, dist: dist + 1 });
     });
 
     // Children go down
     (childrenOf.get(id) ?? []).forEach(cid => {
-      if (!visited.has(cid)) bfsQueue.push({ id: cid, gen: gen + 1 });
+      if (!visited.has(cid)) bfsQueue.push({ id: cid, gen: gen + 1, dist: dist + 1 });
     });
   }
 
@@ -260,34 +262,33 @@ function computeHierarchicalLayout(
     genGroups.get(gen)!.push(id);
   });
 
-  // Build "family units" per row: a unit = person + optional spouse (avoid placing spouse twice)
-  const placed = new Set<string>();
+  // ── Top-down placement: place each generation's children under their parents ──
   const positions: Record<string, HierPos> = {};
-
+  const placed = new Set<string>();
   const sortedGens = Array.from(genGroups.keys()).sort((a, b) => a - b);
+  const GAP = 80;
 
-  sortedGens.forEach(gen => {
-    const members = genGroups.get(gen)!;
+  // Helper: build units (person + optional spouse) from a member list
+  const buildUnits = (members: string[]) => {
     const units: { primary: string; spouse: string | null }[] = [];
-
     members.forEach(id => {
       if (placed.has(id)) return;
       placed.add(id);
       const sp = spouseOf.get(id);
       let spouseId: string | null = null;
-      if (sp && genMap[sp] === gen && !placed.has(sp)) {
+      if (sp && genMap[sp] !== undefined && !placed.has(sp)) {
         spouseId = sp;
         placed.add(sp);
       }
       units.push({ primary: id, spouse: spouseId });
     });
+    return units;
+  };
 
-    // Calculate total row width
-    const GAP = 60;
+  // Helper: place units centered around a given X
+  const placeUnits = (units: { primary: string; spouse: string | null }[], aroundX: number, rowY: number, gen: number) => {
     const totalWidth = units.length * UNIT_WIDTH + (units.length - 1) * GAP;
-    const startX = centerX - totalWidth / 2;
-    const rowY = centerY + gen * ROW_SPACING;
-
+    const startX = aroundX - totalWidth / 2;
     units.forEach((unit, i) => {
       const unitCenterX = startX + i * (UNIT_WIDTH + GAP) + UNIT_WIDTH / 2;
       if (unit.spouse) {
@@ -297,58 +298,81 @@ function computeHierarchicalLayout(
         positions[unit.primary] = { x: unitCenterX, y: rowY, gen };
       }
     });
-  });
+  };
 
-  // Second pass: center parent pairs above the midpoint of their children
-  sortedGens.forEach(gen => {
+  // Process the topmost (first) generation — place evenly centered
+  const firstGen = sortedGens[0];
+  const firstMembers = [...(genGroups.get(firstGen) ?? [])].sort((a, b) => (bfsDistance[a] ?? 999) - (bfsDistance[b] ?? 999));
+  const firstUnits = buildUnits(firstMembers);
+  placeUnits(firstUnits, centerX, centerY + firstGen * ROW_SPACING, firstGen);
+
+  // Process subsequent generations: group children by their parent's position
+  for (let gi = 1; gi < sortedGens.length; gi++) {
+    const gen = sortedGens[gi];
     const members = genGroups.get(gen)!;
-    const alreadyShifted = new Set<string>();
+    const rowY = centerY + gen * ROW_SPACING;
+
+    // Group members by their parent couple
+    const parentGroups = new Map<string, string[]>();
+    const orphans: string[] = [];
+
     members.forEach(id => {
-      if (alreadyShifted.has(id)) return;
-      const children = (childrenOf.get(id) ?? []).filter(c => c in positions);
-      if (children.length === 0) return;
-      const childXs = children.map(c => positions[c].x);
-      const childMid = (Math.min(...childXs) + Math.max(...childXs)) / 2;
-      const sp = spouseOf.get(id);
-      if (sp && positions[sp] && genMap[sp] === gen) {
-        const pairMid = (positions[id].x + positions[sp].x) / 2;
-        const shift = childMid - pairMid;
-        positions[id].x += shift;
-        positions[sp].x += shift;
-        alreadyShifted.add(id);
-        alreadyShifted.add(sp);
-      } else if (positions[id]) {
-        positions[id].x = childMid;
-        alreadyShifted.add(id);
+      if (placed.has(id)) return;
+      const parents = (parentsOf.get(id) ?? []).filter(p => p in positions);
+      if (parents.length === 0) {
+        orphans.push(id);
+        return;
       }
+      // Couple key from parents already in positions
+      const coupleKey = parents.length >= 2 ? [...parents].sort().join('-') : parents[0];
+      if (!parentGroups.has(coupleKey)) parentGroups.set(coupleKey, []);
+      parentGroups.get(coupleKey)!.push(id);
     });
-  });
 
-  // Third pass: resolve horizontal overlaps within each generation
+    // Sort parent groups by parent's X position (left-to-right)
+    const sortedParentGroups = Array.from(parentGroups.entries()).sort(([keyA], [keyB]) => {
+      const aIds = keyA.split('-');
+      const bIds = keyB.split('-');
+      const aX = aIds.reduce((s, id) => s + (positions[id]?.x ?? 0), 0) / aIds.length;
+      const bX = bIds.reduce((s, id) => s + (positions[id]?.x ?? 0), 0) / bIds.length;
+      return aX - bX;
+    });
+
+    // Place each group of children centered under their parents
+    sortedParentGroups.forEach(([coupleKey, children]) => {
+      const parentIds = coupleKey.split('-');
+      const parentMidX = parentIds.reduce((s, id) => s + (positions[id]?.x ?? centerX), 0) / parentIds.length;
+      // Sort children: closest to root first
+      children.sort((a, b) => (bfsDistance[a] ?? 999) - (bfsDistance[b] ?? 999));
+      const units = buildUnits(children);
+      placeUnits(units, parentMidX, rowY, gen);
+    });
+
+    // Place orphans (no parent in tree) at the end
+    if (orphans.length > 0) {
+      const allXs = Object.values(positions).map(p => p.x);
+      const rightEdge = allXs.length > 0 ? Math.max(...allXs) + UNIT_WIDTH + GAP : centerX;
+      const units = buildUnits(orphans);
+      placeUnits(units, rightEdge, rowY, gen);
+    }
+  }
+
+  // Resolve horizontal overlaps within each generation
   sortedGens.forEach(gen => {
-    const members = genGroups.get(gen)!;
-    const sorted = members
-      .filter(id => id in positions)
-      .sort((a, b) => positions[a].x - positions[b].x);
+    const members = (genGroups.get(gen) ?? []).filter(id => id in positions);
+    const sorted = members.sort((a, b) => positions[a].x - positions[b].x);
 
     for (let i = 1; i < sorted.length; i++) {
       const prev = sorted[i - 1];
       const curr = sorted[i];
       const gap = positions[curr].x - positions[prev].x;
       const areSpouses = spouseOf.get(prev) === curr || spouseOf.get(curr) === prev;
-      // Spouses can be close; others need enough space for name labels (~160px)
       const minGap = areSpouses ? SPOUSE_GAP : 160;
       if (gap < minGap) {
         const push = (minGap - gap) / 2;
-        positions[prev].x -= push;
-        positions[curr].x += push;
-        const prevSp = spouseOf.get(prev);
-        if (prevSp && positions[prevSp] && prevSp !== curr && genMap[prevSp] === gen) {
-          positions[prevSp].x -= push;
-        }
-        const currSp = spouseOf.get(curr);
-        if (currSp && positions[currSp] && currSp !== prev && genMap[currSp] === gen) {
-          positions[currSp].x += push;
+        // Push current and everything to its right forward
+        for (let j = i; j < sorted.length; j++) {
+          positions[sorted[j]].x += push * 2;
         }
       }
     }
@@ -489,7 +513,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     const generations = assignGenerations(people, relationships);
     const spousePairs = getSpousePairs(relationships);
     const maxGen = Math.max(...Object.values(generations), 0);
-    const genSpacing = Math.max(220, height / (maxGen + 2));
+    const genSpacing = Math.max(280, height / (maxGen + 2));
 
     // SVG defs
     svg.append('defs').html(`
@@ -546,7 +570,8 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     const familyConnectorGroup = g.append('g').attr('class', 'family-connectors');
 
     // Function to compute a family connector compound path from current node positions
-    const computeFamilyPath = (fu: FamilyUnit): string => {
+    // Each family unit gets a unique junction Y offset to prevent horizontal bars from overlapping
+    const computeFamilyPath = (fu: FamilyUnit, fuIndex: number): string => {
       const getPos = (id: string) => {
         const n = nodes.find(nn => nn.id === id) as any;
         return n ? { x: n.x ?? 0, y: n.y ?? 0 } : { x: 0, y: 0 };
@@ -555,17 +580,18 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
       const childPositions = fu.children.map(getPos);
       if (parentPositions.length === 0 || childPositions.length === 0) return '';
 
-      // Junction Y: between parents and children
       const parentMidX = parentPositions.reduce((s, p) => s + p.x, 0) / parentPositions.length;
       const parentY = parentPositions[0].y;
       const childY = childPositions[0].y;
-      const junctionY = parentY + (childY - parentY) * 0.4;
+      const gap = childY - parentY;
+      // Stagger junction Y: base at 35% of gap, offset by 12px per family unit index
+      const junctionY = parentY + gap * 0.35 + (fuIndex % 5) * 12;
 
       let path = '';
       // Vertical drop from parent midpoint to junction
       path += `M${parentMidX},${parentY + 35} L${parentMidX},${junctionY} `;
 
-      // Horizontal bar: always spans from parent midpoint to all children
+      // Horizontal bar: spans from parent midpoint to all children
       const allXs = [parentMidX, ...childPositions.map(c => c.x)];
       const minX = Math.min(...allXs);
       const maxX = Math.max(...allXs);
