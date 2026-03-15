@@ -466,7 +466,47 @@ function computeHierarchicalLayout(
     }
 
     if (bridgePersonId && positions[bridgePersonId]) {
-      placeUnit(unit, positions[bridgePersonId].x + unit.subtreeWidth / 2 + UNIT_GAP);
+      const bridgeX = positions[bridgePersonId].x;
+      placeUnit(unit, bridgeX + unit.subtreeWidth / 2 + UNIT_GAP);
+
+      // Push main tree nodes to the right of the in-law insertion to avoid overlap
+      // Collect all in-law positions to find their rightmost edge per generation
+      const inlawPositionIds = new Set<string>();
+      inlawMembers.forEach(mid => { if (positions[mid]) inlawPositionIds.add(mid); });
+
+      // For each generation, find rightmost in-law X
+      const inlawRightByGen = new Map<number, number>();
+      for (const mid of inlawPositionIds) {
+        const p = positions[mid];
+        const current = inlawRightByGen.get(p.gen) ?? -Infinity;
+        inlawRightByGen.set(p.gen, Math.max(current, p.x));
+      }
+
+      // Shift main tree nodes that overlap
+      const MIN_SEPARATION = 120;
+      for (const [gen, inlawRight] of inlawRightByGen) {
+        // Find main tree nodes at this gen that are to the right of bridge and overlap with in-law
+        const mainNodesAtGen = Object.entries(positions)
+          .filter(([id, p]) => p.gen === gen && mainTreeIds.has(id) && !inlawPositionIds.has(id) && p.x > bridgeX)
+          .sort(([, a], [, b]) => a.x - b.x);
+
+        if (mainNodesAtGen.length === 0) continue;
+
+        const leftmostMainX = mainNodesAtGen[0][1].x;
+        const needed = (inlawRight + MIN_SEPARATION) - leftmostMainX;
+        if (needed > 0) {
+          // Shift all main tree nodes to the right of bridge at this gen (and their children)
+          for (const [id] of mainNodesAtGen) {
+            positions[id].x += needed;
+          }
+          // Also shift children of shifted nodes (all main tree nodes right of bridge in deeper gens)
+          for (const [id, p] of Object.entries(positions)) {
+            if (mainTreeIds.has(id) && !inlawPositionIds.has(id) && p.gen > gen && p.x > bridgeX) {
+              p.x += needed;
+            }
+          }
+        }
+      }
     } else {
       const allXs = Object.values(positions).map(p => p.x);
       const rightEdge = allXs.length > 0 ? Math.max(...allXs) + UNIT_WIDTH : centerX;
