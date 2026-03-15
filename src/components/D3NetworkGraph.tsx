@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as d3 from 'd3';
 import { Person, Relationship, RelationshipType } from '@/types/family';
-import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Download, Search, X, Printer, FileDown } from 'lucide-react';
+import { ZoomIn, ZoomOut, Download, Search, X, Printer, FileDown, List } from 'lucide-react';
 
 interface D3NetworkGraphProps {
   people: Person[];
@@ -557,6 +557,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     new Set(['parent_child', 'spouse'])
   );
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [showLegend, setShowLegend] = useState(true);
 
   useEffect(() => {
     const handler = () => setContextMenu(prev => ({ ...prev, visible: false }));
@@ -1062,10 +1063,6 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     if (zoomRef.current && svgRef.current) d3.select(svgRef.current).transition().duration(300).call(zoomRef.current.scaleBy, f);
   }, []);
 
-  const handleCenter = useCallback(() => {
-    if (zoomRef.current && svgRef.current) d3.select(svgRef.current).transition().duration(300).call(zoomRef.current.transform, d3.zoomIdentity);
-  }, []);
-
   const fitToView = useCallback(() => {
     if (!gRef.current || !svgRef.current || !zoomRef.current) return;
     const bounds = gRef.current.getBBox();
@@ -1240,7 +1237,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
       <svg ref={svgRef} width={width} height={height} className="bg-white" style={{ width: '100%', height: '100%' }} />
 
       {/* Legend + Filters */}
-      <div className="absolute bottom-3 left-3 bg-white/95 backdrop-blur-sm rounded-lg shadow border px-3 py-2.5 text-xs max-w-[280px] z-20">
+      {showLegend && <div className="absolute bottom-3 left-3 bg-white/95 backdrop-blur-sm rounded-lg shadow border px-3 py-2.5 text-xs max-w-[280px] z-20">
         <div className="font-semibold text-gray-700 mb-2">Show / Hide Relationships</div>
         <div className="flex items-center gap-3 mb-2 pb-2 border-b border-gray-100">
           <div className="flex items-center gap-1"><span className="w-3 h-3 rounded-full" style={{ background: NODE_COLORS.male }} /> Male</div>
@@ -1256,35 +1253,34 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
             </label>
           ))}
         </div>
-        <div className="mt-2 pt-2 border-t border-gray-100 text-gray-400">Click a person for hierarchy view</div>
-      </div>
+        <div className="mt-2 pt-2 border-t border-gray-100 text-gray-400">Click a name to see your roots</div>
+      </div>}
 
       {/* Selected Person Detail Panel */}
       {selectedPerson && (
-        <div className="absolute bottom-3 right-14 bg-white/95 backdrop-blur-sm rounded-lg shadow-lg border w-72 max-h-[320px] overflow-y-auto z-20">
-          <div className="sticky top-0 bg-white border-b px-3 py-2 flex items-center justify-between">
-            <div>
-              <div className="font-semibold text-sm">{selectedPerson.person.name}</div>
-              <div className="text-xs text-muted-foreground capitalize">
+        <div className="absolute top-12 right-3 bg-white/95 backdrop-blur-sm rounded-lg shadow-lg border w-56 max-h-[280px] overflow-y-auto z-20 text-[11px]">
+          <div className="sticky top-0 bg-white border-b px-2.5 py-1.5 flex items-center justify-between">
+            <div className="min-w-0">
+              <div className="font-semibold text-xs truncate">{selectedPerson.person.name}</div>
+              <div className="text-[10px] text-muted-foreground capitalize truncate">
                 {selectedPerson.person.gender}
                 {selectedPerson.person.birthDate && ` · b. ${new Date(selectedPerson.person.birthDate).getFullYear()}`}
-                {selectedPerson.person.birthPlace && ` · ${selectedPerson.person.birthPlace}`}
               </div>
             </div>
-            <button onClick={() => setSelectedPerson(null)} className="p-1 hover:bg-gray-100 rounded"><X className="w-3.5 h-3.5" /></button>
+            <button onClick={() => setSelectedPerson(null)} className="p-0.5 hover:bg-gray-100 rounded ml-1 shrink-0"><X className="w-3 h-3" /></button>
           </div>
-          <div className="px-3 py-2">
-            <div className="text-xs font-medium text-gray-500 mb-1">Relationships ({selectedPerson.relationships.length})</div>
+          <div className="px-2.5 py-1.5">
+            <div className="text-[10px] font-medium text-gray-500 mb-1">Relationships ({selectedPerson.relationships.length})</div>
             {selectedPerson.relationships.length === 0 ? (
-              <div className="text-xs text-gray-400 py-2">No relationships found</div>
+              <div className="text-[10px] text-gray-400 py-1">No relationships found</div>
             ) : (
-              <div className="space-y-1">
+              <div className="space-y-0.5">
                 {selectedPerson.relationships.map((rel, i) => {
                   const cat = getCategoryForType(rel.type);
                   return (
-                    <div key={i} className="flex items-center gap-2 text-xs py-0.5">
-                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: cat?.color ?? '#999' }} />
-                      <span className="text-gray-500 w-20 shrink-0 capitalize">{rel.type}</span>
+                    <div key={i} className="flex items-center gap-1.5 py-0.5">
+                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: cat?.color ?? '#999' }} />
+                      <span className="text-gray-500 w-14 shrink-0 capitalize">{rel.type}</span>
                       <span className="font-medium text-gray-800 truncate">{rel.name}</span>
                     </div>
                   );
@@ -1310,12 +1306,11 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
         )}
       </div>
 
-      {/* Zoom + Export Controls */}
+      {/* Controls */}
       <div className="absolute top-3 right-3 flex flex-col gap-1 z-20">
         <button onClick={() => handleZoom(1.3)} className="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 border" title="Zoom In"><ZoomIn className="w-4 h-4" /></button>
         <button onClick={() => handleZoom(1 / 1.3)} className="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 border" title="Zoom Out"><ZoomOut className="w-4 h-4" /></button>
-        <button onClick={handleCenter} className="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 border" title="Reset View"><RotateCcw className="w-4 h-4" /></button>
-        <button onClick={fitToView} className="p-2 bg-white rounded-lg shadow-sm hover:bg-gray-50 border" title="Fit to View"><Maximize2 className="w-4 h-4" /></button>
+        <button onClick={() => setShowLegend(v => !v)} className={`p-2 rounded-lg shadow-sm border ${showLegend ? 'bg-indigo-100 border-indigo-300' : 'bg-white hover:bg-gray-50'}`} title="Toggle Legend"><List className="w-4 h-4" /></button>
         <div className="relative">
           <button onClick={() => setShowExportMenu(v => !v)} className="p-2 bg-indigo-600 text-white rounded-lg shadow-sm hover:bg-indigo-700 border border-indigo-700" title="Export / Print"><Download className="w-4 h-4" /></button>
           {showExportMenu && (

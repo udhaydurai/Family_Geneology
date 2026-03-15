@@ -22,7 +22,9 @@ import {
   LogOut,
   Database,
   Brain,
+  Search,
 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
 
 const Index = () => {
@@ -50,6 +52,7 @@ const Index = () => {
   const [activeTab, setActiveTab] = useState('tree');
   const [showPersonForm, setShowPersonForm] = useState(false);
   const [editingPerson, setEditingPerson] = useState<Person | null>(null);
+  const [peopleSearch, setPeopleSearch] = useState('');
 
   const handleAddPerson = async (personData: Omit<Person, 'id'>) => {
     await addPerson(personData);
@@ -161,95 +164,82 @@ const Index = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-100">
-      {/* Header */}
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+      {/* Compact Header: tabs + stats + actions in one row */}
       <header className="bg-white/80 backdrop-blur-sm border-b border-purple-100 sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <div className="p-2 bg-royal-gradient rounded-lg">
-                <Users className="w-6 h-6 text-white" />
+        <div className="container mx-auto px-4 py-1.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-royal-gradient rounded-md">
+                    <Users className="w-4 h-4 text-white" />
+                  </div>
+                  <span className="font-bold text-sm bg-royal-gradient bg-clip-text text-transparent">வேர்கள்</span>
+                </div>
+                <TabsList className="bg-white/50 backdrop-blur-sm h-8">
+                  <TabsTrigger value="tree" className="text-xs h-7 data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
+                    Tree
+                  </TabsTrigger>
+                  <TabsTrigger value="people" className="text-xs h-7 data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
+                    People
+                  </TabsTrigger>
+                  <TabsTrigger value="relationships" className="text-xs h-7 data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
+                    Relationships
+                  </TabsTrigger>
+                  <TabsTrigger value="import" className="text-xs h-7 data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
+                    Import
+                  </TabsTrigger>
+                  {showReviewTab && (
+                    <TabsTrigger value="review" className="text-xs h-7 data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
+                      Review
+                      {pendingChanges.length > 0 && (
+                        <Badge variant="destructive" className="ml-1 h-4 px-1 text-[10px]">{pendingChanges.length}</Badge>
+                      )}
+                    </TabsTrigger>
+                  )}
+                </TabsList>
               </div>
-              <div>
-                <h1 className="text-2xl font-bold bg-royal-gradient bg-clip-text text-transparent">
-                  Family Tree
-                </h1>
-                <p className="text-sm text-muted-foreground">
-                  {useCloud
-                    ? `${user?.email ?? ''} (${isAdmin ? 'Admin' : 'Contributor'})`
-                    : 'Local mode'}
-                </p>
-              </div>
-            </div>
 
-            <div className="flex items-center space-x-2">
-              {people.length > 0 && (
-                <Badge variant="secondary" className="bg-genealogy-primary/10 text-genealogy-primary">
-                  {people.length} People &middot; {relationships.length} Relationships
-                </Badge>
-              )}
-              {pendingChanges.length > 0 && isAdmin && (
-                <Badge variant="destructive">{pendingChanges.length} Pending</Badge>
-              )}
-              {!useCloud && (
-                <Button variant="outline" size="sm" onClick={handleLoadTestData}>
-                  <Database className="w-4 h-4 mr-1" />
-                  Load Test Data
-                </Button>
-              )}
-              {!useCloud && people.length > 0 && (
-                <Button variant="outline" size="sm" onClick={handleInferRelationships}>
-                  <Brain className="w-4 h-4 mr-1" />
-                  Infer
-                </Button>
-              )}
-              {isAuthenticated && (
-                <Button variant="ghost" size="sm" onClick={signOut}>
-                  <LogOut className="w-4 h-4 mr-1" />
-                  Sign Out
-                </Button>
-              )}
+              <div className="flex items-center gap-2">
+                {people.length > 0 && (
+                  <span className="text-[11px] text-muted-foreground">
+                    {people.length} people &middot; {relationships.length} rels
+                  </span>
+                )}
+                {pendingChanges.length > 0 && isAdmin && (
+                  <Badge variant="destructive" className="text-[10px] h-4 px-1">{pendingChanges.length} Pending</Badge>
+                )}
+                {!useCloud && (
+                  <Button variant="outline" size="sm" className="h-7 text-xs" onClick={handleLoadTestData}>
+                    <Database className="w-3 h-3 mr-1" /> Test Data
+                  </Button>
+                )}
+                {!useCloud && people.length > 0 && (
+                  <Button variant="outline" size="sm" className="h-7 text-xs" onClick={handleInferRelationships}>
+                    <Brain className="w-3 h-3 mr-1" /> Infer
+                  </Button>
+                )}
+                {activeTab === 'tree' && (
+                  <Button onClick={() => setShowPersonForm(true)} className="bg-royal-gradient hover:opacity-90 h-7 text-xs" size="sm">
+                    <Plus className="w-3 h-3 mr-1" /> Add Person
+                  </Button>
+                )}
+                {isAuthenticated && (
+                  <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={signOut}>
+                    <LogOut className="w-3 h-3 mr-1" /> Sign Out
+                  </Button>
+                )}
+              </div>
             </div>
-          </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="container mx-auto px-4 py-6">
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-          <TabsList className="bg-white/50 backdrop-blur-sm">
-            <TabsTrigger value="tree" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
-              Tree View
-            </TabsTrigger>
-            <TabsTrigger value="people" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
-              People
-            </TabsTrigger>
-            <TabsTrigger value="relationships" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
-              Relationships
-            </TabsTrigger>
-            <TabsTrigger value="import" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
-              Import / Cleanup
-            </TabsTrigger>
-            {showReviewTab && (
-              <TabsTrigger value="review" className="data-[state=active]:bg-genealogy-primary data-[state=active]:text-white">
-                Review
-                {pendingChanges.length > 0 && (
-                  <Badge variant="destructive" className="ml-2 h-5 px-1.5 text-xs">{pendingChanges.length}</Badge>
-                )}
-              </TabsTrigger>
-            )}
-          </TabsList>
+      <main className="container mx-auto px-4 py-2">
 
           {/* Tree View */}
-          <TabsContent value="tree">
-            <Card className="bg-white/70 backdrop-blur-sm">
-              <CardContent className="p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <h2 className="text-lg font-semibold">Family Network</h2>
-                  <Button onClick={() => setShowPersonForm(true)} className="bg-royal-gradient hover:opacity-90" size="sm">
-                    <Plus className="w-4 h-4 mr-1" /> Add Person
-                  </Button>
-                </div>
-                <div className="bg-white rounded-lg border overflow-hidden" style={{ height: '700px' }}>
+          <TabsContent value="tree" className="mt-0">
+                <div className="bg-white rounded-lg border overflow-hidden" style={{ height: 'calc(100vh - 56px)' }}>
                   <D3NetworkGraph
                     people={people}
                     relationships={relationships}
@@ -257,8 +247,6 @@ const Index = () => {
                     onAddRelationship={handleAddRelationship}
                   />
                 </div>
-              </CardContent>
-            </Card>
           </TabsContent>
 
           {/* People */}
@@ -267,9 +255,22 @@ const Index = () => {
               <CardContent className="p-6">
                 <div className="flex items-center justify-between mb-6">
                   <h2 className="text-xl font-semibold">Family Members</h2>
-                  <Button onClick={() => setShowPersonForm(true)} className="bg-royal-gradient hover:opacity-90">
-                    <Plus className="w-4 h-4 mr-2" /> Add Person
-                  </Button>
+                  <div className="flex items-center gap-3">
+                    {people.length > 0 && (
+                      <div className="relative w-64">
+                        <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                        <Input
+                          placeholder="Search people..."
+                          value={peopleSearch}
+                          onChange={e => setPeopleSearch(e.target.value)}
+                          className="pl-8 h-9"
+                        />
+                      </div>
+                    )}
+                    <Button onClick={() => setShowPersonForm(true)} className="bg-royal-gradient hover:opacity-90">
+                      <Plus className="w-4 h-4 mr-2" /> Add Person
+                    </Button>
+                  </div>
                 </div>
 
                 {people.length === 0 ? (
@@ -289,7 +290,13 @@ const Index = () => {
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {people.map(person => (
+                    {people.filter(p => {
+                      if (!peopleSearch) return true;
+                      const q = peopleSearch.toLowerCase();
+                      return p.name.toLowerCase().includes(q)
+                        || (p.birthPlace && p.birthPlace.toLowerCase().includes(q))
+                        || (p.gender && p.gender.toLowerCase().includes(q));
+                    }).map(person => (
                       <Card key={person.id} className="hover:shadow-md transition-shadow">
                         <CardContent className="p-4">
                           <div className="flex items-center space-x-3 mb-3">
@@ -364,8 +371,9 @@ const Index = () => {
               />
             </TabsContent>
           )}
-        </Tabs>
+
       </main>
+      </Tabs>
 
       {/* Person Form Dialog */}
       <Dialog open={showPersonForm || !!editingPerson} onOpenChange={() => {
