@@ -22,6 +22,7 @@ import {
   Database,
   Brain,
   Search,
+  Info,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
@@ -52,6 +53,7 @@ const Index = () => {
   const [showPersonForm, setShowPersonForm] = useState(false);
   const [editingPerson, setEditingPerson] = useState<Person | null>(null);
   const [peopleSearch, setPeopleSearch] = useState('');
+  const [showAbout, setShowAbout] = useState(false);
 
   const handleAddPerson = async (personData: Omit<Person, 'id'>) => {
     await addPerson(personData);
@@ -221,6 +223,9 @@ const Index = () => {
                     <Plus className="w-3 h-3 mr-1" /> Add Person
                   </Button>
                 )}
+                <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setShowAbout(true)}>
+                  <Info className="w-3 h-3 mr-1" /> About
+                </Button>
                 {isAuthenticated && (
                   <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={signOut}>
                     <LogOut className="w-3 h-3 mr-1" /> Sign Out
@@ -386,6 +391,63 @@ const Index = () => {
             onSubmit={editingPerson ? handleEditPerson : handleAddPerson}
             onCancel={() => { setShowPersonForm(false); setEditingPerson(null); }}
           />
+        </DialogContent>
+      </Dialog>
+
+      {/* About Dialog */}
+      <Dialog open={showAbout} onOpenChange={setShowAbout}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-3">
+              <img src="/veergal-logo.svg" alt="வேர்கள்" className="w-10 h-10 rounded-full" />
+              <div>
+                <div className="text-lg">வேர்கள் <span className="text-sm font-normal text-muted-foreground">(Veergal)</span></div>
+                <div className="text-xs font-normal text-muted-foreground italic">Every family has a story. This is ours.</div>
+              </div>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 text-sm">
+            <p className="text-muted-foreground">
+              வேர்கள் means <strong>"Roots"</strong> in Tamil. A family tree built as a gift from a father to his son —
+              to preserve the connections, stories, and roots that bind our family together.
+            </p>
+
+            <div>
+              <h3 className="font-semibold mb-2">How to Use</h3>
+              <div className="space-y-2 text-muted-foreground text-xs">
+                <div className="flex gap-2">
+                  <span className="font-mono bg-muted px-1.5 py-0.5 rounded text-[10px] shrink-0">Click</span>
+                  <span>Click any person to see their family tree in a hierarchical view</span>
+                </div>
+                <div className="flex gap-2">
+                  <span className="font-mono bg-muted px-1.5 py-0.5 rounded text-[10px] shrink-0">+/−</span>
+                  <span>Expand or collapse in-law branches using the toggle near spouse nodes</span>
+                </div>
+                <div className="flex gap-2">
+                  <span className="font-mono bg-muted px-1.5 py-0.5 rounded text-[10px] shrink-0">Scroll</span>
+                  <span>Scroll wheel or pinch to zoom in/out. Drag to pan around</span>
+                </div>
+                <div className="flex gap-2">
+                  <span className="font-mono bg-muted px-1.5 py-0.5 rounded text-[10px] shrink-0">Background</span>
+                  <span>Click the background to return to the force-directed network view</span>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <h3 className="font-semibold mb-2">Tabs</h3>
+              <div className="space-y-1 text-muted-foreground text-xs">
+                <p><strong>Tree</strong> — Interactive family network visualization</p>
+                <p><strong>People</strong> — View and manage family members</p>
+                <p><strong>Relationships</strong> — Add and search connections between people</p>
+                <p><strong>Import</strong> — Bulk import from CSV and data cleanup</p>
+              </div>
+            </div>
+
+            <div className="border-t pt-3 text-[10px] text-muted-foreground text-center">
+              Built with love by Udhay Durai
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
