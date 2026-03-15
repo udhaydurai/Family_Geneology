@@ -217,6 +217,24 @@ export const useSupabaseData = () => {
     setPeople(newPeople);
   }, []);
 
+  const clearAll = useCallback(async () => {
+    if (!supabase) return;
+    // Delete relationships first (foreign key), then people
+    const { error: relErr } = await supabase.from('relationships').delete().neq('id', '');
+    if (relErr) {
+      toast({ title: 'Error', description: `Failed to clear relationships: ${relErr.message}`, variant: 'destructive' });
+      return;
+    }
+    const { error: pplErr } = await supabase.from('people').delete().neq('id', '');
+    if (pplErr) {
+      toast({ title: 'Error', description: `Failed to clear people: ${pplErr.message}`, variant: 'destructive' });
+      return;
+    }
+    setPeople([]);
+    setRelationships([]);
+    toast({ title: 'All Data Cleared', description: 'All people and relationships have been permanently deleted.' });
+  }, [toast]);
+
   return {
     people,
     relationships,
@@ -231,6 +249,7 @@ export const useSupabaseData = () => {
     rejectChange,
     setPeople: setPeopleDirectly,
     refetch: fetchData,
+    clearAll,
   };
 };
 

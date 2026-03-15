@@ -9,9 +9,10 @@ import { useToast } from '@/hooks/use-toast';
 interface DataUploadProps {
   people: Person[];
   relationships: Relationship[];
-  onImportPeople: (people: Person[]) => void;
-  onImportRelationships: (relationships: Relationship[]) => void;
+  onImportPeople: (people: Person[]) => void | Promise<void>;
+  onImportRelationships: (relationships: Relationship[]) => void | Promise<void>;
   onExportData: () => void;
+  onClearAll?: () => void | Promise<void>;
 }
 
 interface ImportResult {
@@ -30,13 +31,14 @@ export const DataUpload: React.FC<DataUploadProps> = ({
   relationships,
   onImportPeople,
   onImportRelationships,
-  onExportData
+  onExportData,
+  onClearAll
 }) => {
   const [isUploading, setIsUploading] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const { toast } = useToast();
 
-  // Download the new template
+  // Download the new template — Children are separated by semicolons (not commas) to avoid CSV conflicts
   const getSampleData = () => {
     const template = [
       FAMILY_COLUMNS,
@@ -45,8 +47,8 @@ export const DataUpload: React.FC<DataUploadProps> = ({
       ['Taylor Johnson', 'Son', '', 'male', '', '', 'Alex Johnson', 'Jamie Lee'],
       ['Morgan Smith', 'Sister', '', 'female', 'Chris Brown', 'Jordan Brown', 'Robert Johnson', 'Linda Smith'],
       ['Chris Brown', 'Brother in Law', '', 'male', 'Morgan Smith', 'Jordan Brown', 'Michael Brown', 'Sarah Brown'],
-      ['Linda Smith', 'Mother', '', 'female', 'Robert Johnson', 'Alex Johnson, Morgan Smith', 'William Smith', 'Emma Smith'],
-      ['Robert Johnson', 'Father', '', 'male', 'Linda Smith', 'Alex Johnson, Morgan Smith', 'Edward Johnson', 'Margaret Johnson'],
+      ['Linda Smith', 'Mother', '', 'female', 'Robert Johnson', 'Alex Johnson; Morgan Smith', 'William Smith', 'Emma Smith'],
+      ['Robert Johnson', 'Father', '', 'male', 'Linda Smith', 'Alex Johnson; Morgan Smith', 'Edward Johnson', 'Margaret Johnson'],
       ['Samuel Lee', 'Father in Law', '', 'male', 'Patricia Lee', 'Jamie Lee', 'George Lee', 'Helen Lee'],
       ['Patricia Lee', 'Mother in Law', '', 'female', 'Samuel Lee', 'Jamie Lee', 'Frank Miller', 'Dorothy Miller'],
       ['Jordan Brown', 'Nephew', '', 'male', '', '', 'Chris Brown', 'Morgan Smith'],
@@ -111,14 +113,53 @@ export const DataUpload: React.FC<DataUploadProps> = ({
   // Helper to normalize names for matching
   const normalizeName = (name: string) => name.replace(/\s+/g, ' ').trim().toLowerCase();
 
+  // Properly parse a CSV line, respecting quoted fields (commas inside quotes are preserved)
+  const parseCSVLine = (line: string): string[] => {
+    const cells: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        inQuotes = !inQuotes;
+      } else if (ch === ',' && !inQuotes) {
+        cells.push(current.trim());
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+    cells.push(current.trim());
+    return cells;
+  };
+
+  // Fix rows that have too many columns due to unquoted commas in the Children field
+  const fixOverflowRows = (rows: string[][], expectedCols: number, childrenIdx: number): string[][] => {
+    return rows.map((row, i) => {
+      if (i === 0 || row.length <= expectedCols || childrenIdx < 0) return row;
+      // Extra columns likely came from commas in the Children field
+      const overflow = row.length - expectedCols;
+      // Merge the extra cells back into the Children column
+      const childrenParts = row.slice(childrenIdx, childrenIdx + 1 + overflow);
+      const fixed = [
+        ...row.slice(0, childrenIdx),
+        childrenParts.join('; '),  // rejoin with semicolons
+        ...row.slice(childrenIdx + 1 + overflow)
+      ];
+      return fixed;
+    });
+  };
+
   // Parse the new single-table format (improved matching, warnings, deduplication)
   const parseFamilyCSV = (text: string): ImportResult => {
-    const rows = text.split(/\r?\n/).filter(Boolean).map(line => line.split(',').map(cell => cell.replace(/"/g, '').trim()));
+    let rows = text.split(/\r?\n/).filter(Boolean).map(line => parseCSVLine(line));
     if (rows.length < 2) {
       return { success: [], relationships: [], errors: [{ row: 1, message: 'CSV must have at least a header and one data row', data: [] }] };
     }
     const header = rows[0].map(h => h.trim());
     const colIdx = (col: string) => header.findIndex(h => h.toLowerCase() === col.toLowerCase());
+    // Fix rows with too many columns (unquoted commas in Children field)
+    rows = fixOverflowRows(rows, header.length, colIdx('Children'));
     // Map of normalized name to person object
     const peopleMap: Record<string, Person> = {};
     // List of relationships
@@ -188,10 +229,11 @@ export const DataUpload: React.FC<DataUploadProps> = ({
           confidence: 1.0
         });
       }
-      // Children (comma-separated)
+      // Children (semicolon-separated; commas are only used as fallback if no semicolons present)
       const children = row[colIdx('Children')];
       if (children) {
-        children.split(/[,;]/).map(c => c.trim()).filter(Boolean).forEach(childName => {
+        const separator = children.includes(';') ? ';' : ',';
+        children.split(separator).map(c => c.trim()).filter(Boolean).forEach(childName => {
           const childNorm = normalizeName(childName);
           const childPerson = peopleMap[childNorm] || ensurePerson(childName, 'Child');
           relationships.push({
@@ -277,13 +319,13 @@ export const DataUpload: React.FC<DataUploadProps> = ({
     }
   }, [toast]);
 
-  const confirmImport = () => {
+  const confirmImport = async () => {
     if (importResult) {
       if (importResult.success.length > 0) {
-        onImportPeople(importResult.success);
+        await onImportPeople(importResult.success);
       }
       if (importResult.relationships.length > 0) {
-        onImportRelationships(importResult.relationships);
+        await onImportRelationships(importResult.relationships);
       }
       setImportResult(null);
       toast({
@@ -378,7 +420,7 @@ export const DataUpload: React.FC<DataUploadProps> = ({
                 Download Template
               </Button>
               <p className="text-sm text-muted-foreground mt-2">
-                Download a CSV template with the correct format (single table)
+                Download a CSV template with the correct format. Use <strong>semicolons</strong> to separate multiple children (e.g. "Child A; Child B")
               </p>
             </div>
             <div>
@@ -501,10 +543,14 @@ export const DataUpload: React.FC<DataUploadProps> = ({
           <div className="mt-6 flex items-center justify-end">
             <Button
               variant="destructive"
-              onClick={() => {
-                if (window.confirm('Are you sure you want to clear all family data? This cannot be undone.')) {
-                  localStorage.clear();
-                  window.location.reload();
+              onClick={async () => {
+                if (window.confirm('Are you sure you want to clear ALL family data? This permanently deletes everything and cannot be undone.')) {
+                  if (onClearAll) {
+                    await onClearAll();
+                  } else {
+                    localStorage.clear();
+                    window.location.reload();
+                  }
                 }
               }}
             >

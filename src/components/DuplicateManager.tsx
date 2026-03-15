@@ -22,30 +22,48 @@ function normalizeName(name: string): string {
   return name.toLowerCase().replace(/[^a-z]/g, '');
 }
 
-// Simple similarity: shared character ratio
+// Levenshtein edit distance
+function editDistance(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+// Word-based name similarity — designed for Indian names where sharing a surname is common
 function nameSimilarity(a: string, b: string): number {
   const na = normalizeName(a);
   const nb = normalizeName(b);
   if (na === nb) return 1.0;
 
-  // Check if one contains the other (e.g., "Kumar" vs "Kumar Durai")
-  if (na.includes(nb) || nb.includes(na)) return 0.8;
+  // Word-level comparison (more meaningful than character-set overlap)
+  const wordsA = a.trim().toLowerCase().split(/\s+/);
+  const wordsB = b.trim().toLowerCase().split(/\s+/);
 
-  // Character overlap ratio
-  const setA = new Set(na.split(''));
-  const setB = new Set(nb.split(''));
-  const intersection = [...setA].filter(c => setB.has(c)).length;
-  const union = new Set([...setA, ...setB]).size;
-  const jaccard = intersection / union;
+  // Check if all words match (possibly reordered) — e.g., "Durai Kumar" vs "Kumar Durai"
+  if (wordsA.length === wordsB.length && wordsA.every(w => wordsB.includes(w))) return 0.95;
 
-  // Also check edit-distance-like: same first+last initial
-  const wordsA = a.trim().split(/\s+/);
-  const wordsB = b.trim().split(/\s+/);
-  const firstMatch = wordsA[0]?.[0]?.toLowerCase() === wordsB[0]?.[0]?.toLowerCase();
-  const lastMatch = wordsA[wordsA.length - 1]?.[0]?.toLowerCase() === wordsB[wordsB.length - 1]?.[0]?.toLowerCase();
+  // One name is a subset of the other — e.g., "Kumar" vs "Kumar Durai"
+  if (wordsA.every(w => wordsB.includes(w)) || wordsB.every(w => wordsA.includes(w))) return 0.8;
 
-  if (firstMatch && lastMatch && jaccard > 0.4) return 0.7;
-  return jaccard;
+  // Edit distance on the full normalized name — catches typos like "Udhay" vs "Udhaya"
+  const dist = editDistance(na, nb);
+  const maxLen = Math.max(na.length, nb.length);
+  const similarity = 1 - dist / maxLen;
+
+  // Only flag if very similar (within 2-3 character edits on the full name)
+  if (similarity >= 0.85) return similarity;
+
+  // Not a duplicate — sharing one word (like a surname) is NOT enough
+  return 0;
 }
 
 function findDuplicates(people: Person[]): DuplicateGroup[] {
@@ -60,7 +78,7 @@ function findDuplicates(people: Person[]): DuplicateGroup[] {
     for (let j = i + 1; j < people.length; j++) {
       if (used.has(people[j].id)) continue;
       const sim = nameSimilarity(people[i].name, people[j].name);
-      if (sim >= 0.6) {
+      if (sim >= 0.8) {
         group.push(people[j]);
       }
     }
@@ -70,7 +88,7 @@ function findDuplicates(people: Person[]): DuplicateGroup[] {
 
       // Classify similarity
       const allExact = group.every(p => normalizeName(p.name) === normalizeName(group[0].name));
-      const similarity = allExact ? 'exact' : nameSimilarity(group[0].name, group[1].name) >= 0.75 ? 'likely' : 'possible';
+      const similarity = allExact ? 'exact' : nameSimilarity(group[0].name, group[1].name) >= 0.9 ? 'likely' : 'possible';
 
       groups.push({ people: group, similarity });
     }

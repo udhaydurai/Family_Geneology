@@ -9,7 +9,6 @@ interface D3NetworkGraphProps {
   width?: number;
   height?: number;
   onDeleteRelationship?: (relationshipId: string) => void;
-  onUpdateRelationship?: (relationship: Relationship) => void;
   onAddRelationship?: (personId: string, relatedPersonId: string, relationshipType: RelationshipType) => void;
 }
 
@@ -80,6 +79,65 @@ function buildLinks(relationships: Relationship[]): GraphLink[] {
   return links;
 }
 
+// ── Family units: group couple + children for compound path rendering ──
+interface FamilyUnit {
+  parents: string[];
+  children: string[];
+}
+
+function buildFamilyUnits(relationships: Relationship[]): FamilyUnit[] {
+  const spouseOf = new Map<string, string>();
+  const parentChildEdges: { parentId: string; childId: string }[] = [];
+  const seen = new Set<string>();
+
+  relationships.forEach(r => {
+    if (r.relationshipType === 'spouse') {
+      if (!spouseOf.has(r.personId)) spouseOf.set(r.personId, r.relatedPersonId);
+      if (!spouseOf.has(r.relatedPersonId)) spouseOf.set(r.relatedPersonId, r.personId);
+    } else if (r.relationshipType === 'parent' || r.relationshipType === 'child') {
+      const pid = r.relationshipType === 'parent' ? r.personId : r.relatedPersonId;
+      const cid = r.relationshipType === 'parent' ? r.relatedPersonId : r.personId;
+      const key = `${pid}-${cid}`;
+      if (!seen.has(key)) { seen.add(key); parentChildEdges.push({ parentId: pid, childId: cid }); }
+    }
+  });
+
+  // Group by couple (spouse pair) or by shared children (co-parents without spouse link)
+  const familyMap = new Map<string, FamilyUnit>();
+
+  // First: find co-parents (two parents sharing a child)
+  const childToParents = new Map<string, string[]>();
+  parentChildEdges.forEach(({ parentId, childId }) => {
+    if (!childToParents.has(childId)) childToParents.set(childId, []);
+    const parents = childToParents.get(childId)!;
+    if (!parents.includes(parentId)) parents.push(parentId);
+  });
+
+  // Build family units from co-parent pairs
+  parentChildEdges.forEach(({ parentId, childId }) => {
+    // Find the couple: either via spouse link or via shared children
+    const spouse = spouseOf.get(parentId);
+    const coParents = childToParents.get(childId) ?? [parentId];
+    let partners: string[];
+    if (spouse && coParents.includes(spouse)) {
+      partners = [parentId, spouse].sort();
+    } else if (coParents.length === 2) {
+      partners = [...coParents].sort();
+    } else {
+      partners = [parentId];
+    }
+    const coupleKey = partners.join('-');
+
+    if (!familyMap.has(coupleKey)) {
+      familyMap.set(coupleKey, { parents: partners, children: [] });
+    }
+    const unit = familyMap.get(coupleKey)!;
+    if (!unit.children.includes(childId)) unit.children.push(childId);
+  });
+
+  return Array.from(familyMap.values());
+}
+
 // ── Force-layout generation assignment ──
 function assignGenerations(people: Person[], relationships: Relationship[]): Record<string, number> {
   const generations: Record<string, number> = {};
@@ -139,14 +197,13 @@ interface HierPos { x: number; y: number; gen: number }
 
 function computeHierarchicalLayout(
   rootId: string,
-  people: Person[],
   relationships: Relationship[],
   centerX: number,
   centerY: number
 ): Record<string, HierPos> {
-  const ROW_SPACING = 240;
-  const UNIT_WIDTH = 240;
-  const SPOUSE_GAP = 120;
+  const ROW_SPACING = 280;
+  const UNIT_WIDTH = 280;
+  const SPOUSE_GAP = 140;
 
   // Build adjacency
   const parentsOf = new Map<string, string[]>();
@@ -245,48 +302,83 @@ function computeHierarchicalLayout(
   // Second pass: center parent pairs above the midpoint of their children
   sortedGens.forEach(gen => {
     const members = genGroups.get(gen)!;
+    const alreadyShifted = new Set<string>();
     members.forEach(id => {
+      if (alreadyShifted.has(id)) return;
       const children = (childrenOf.get(id) ?? []).filter(c => c in positions);
       if (children.length === 0) return;
       const childXs = children.map(c => positions[c].x);
       const childMid = (Math.min(...childXs) + Math.max(...childXs)) / 2;
       const sp = spouseOf.get(id);
       if (sp && positions[sp] && genMap[sp] === gen) {
-        // Move the pair so their midpoint is above children midpoint
         const pairMid = (positions[id].x + positions[sp].x) / 2;
         const shift = childMid - pairMid;
         positions[id].x += shift;
         positions[sp].x += shift;
+        alreadyShifted.add(id);
+        alreadyShifted.add(sp);
       } else if (positions[id]) {
         positions[id].x = childMid;
+        alreadyShifted.add(id);
       }
     });
+  });
+
+  // Third pass: resolve horizontal overlaps within each generation
+  sortedGens.forEach(gen => {
+    const members = genGroups.get(gen)!;
+    const sorted = members
+      .filter(id => id in positions)
+      .sort((a, b) => positions[a].x - positions[b].x);
+
+    for (let i = 1; i < sorted.length; i++) {
+      const prev = sorted[i - 1];
+      const curr = sorted[i];
+      const gap = positions[curr].x - positions[prev].x;
+      const areSpouses = spouseOf.get(prev) === curr || spouseOf.get(curr) === prev;
+      // Spouses can be close; others need enough space for name labels (~160px)
+      const minGap = areSpouses ? SPOUSE_GAP : 160;
+      if (gap < minGap) {
+        const push = (minGap - gap) / 2;
+        positions[prev].x -= push;
+        positions[curr].x += push;
+        const prevSp = spouseOf.get(prev);
+        if (prevSp && positions[prevSp] && prevSp !== curr && genMap[prevSp] === gen) {
+          positions[prevSp].x -= push;
+        }
+        const currSp = spouseOf.get(curr);
+        if (currSp && positions[currSp] && currSp !== prev && genMap[currSp] === gen) {
+          positions[currSp].x += push;
+        }
+      }
+    }
   });
 
   return positions;
 }
 
-// ── Path drawing (reusable for tick and hierarchical transitions) ──
-function computeLinkPath(d: any): string {
+// ── Path drawing: orthogonal elbow connectors ──
+// linkIndex is used to offset parallel elbows so they don't overlap
+function computeLinkPath(d: any, _i?: number, _nodes?: any): string {
   const sx = (d.source as any).x ?? d.source.x;
   const sy = (d.source as any).y ?? d.source.y;
   const tx = (d.target as any).x ?? d.target.x;
   const ty = (d.target as any).y ?? d.target.y;
 
   if (d.category === 'spouse') {
+    // Horizontal line between spouses
     return `M${sx},${sy} L${tx},${ty}`;
   }
   if (d.category === 'parent_child') {
-    const my = (sy + ty) / 2;
-    return `M${sx},${sy} C${sx},${my} ${tx},${my} ${tx},${ty}`;
+    // Elbow: down from parent, horizontal to child's X, down to child
+    // Offset the midpoint-Y slightly based on source X to prevent overlapping horizontal segments
+    const baseY = sy + (ty - sy) * 0.4;
+    const offset = (sx - (sx + tx) / 2) * 0.08;
+    const my = baseY + offset;
+    return `M${sx},${sy} L${sx},${my} L${tx},${my} L${tx},${ty}`;
   }
-  const dx = tx - sx;
-  const dy = ty - sy;
-  const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-  const bend = dist * 0.2;
-  const mx = (sx + tx) / 2 - (dy / dist) * bend;
-  const my = (sy + ty) / 2 + (dx / dist) * bend;
-  return `M${sx},${sy} Q${mx},${my} ${tx},${ty}`;
+  // Other relationships: straight diagonal to keep them visually distinct from parent/child
+  return `M${sx},${sy} L${tx},${ty}`;
 }
 
 function computeLinkLabelPos(d: any): { x: number; y: number } {
@@ -295,15 +387,13 @@ function computeLinkLabelPos(d: any): { x: number; y: number } {
   const tx = (d.target as any).x ?? d.target.x;
   const ty = (d.target as any).y ?? d.target.y;
 
-  const x = (sx + tx) / 2;
-  if (d.category === 'parent_child' || d.category === 'spouse') {
-    return { x, y: (sy + ty) / 2 - 6 };
+  if (d.category === 'spouse') {
+    return { x: (sx + tx) / 2, y: (sy + ty) / 2 - 8 };
   }
-  const dx = tx - sx;
-  const dy = ty - sy;
-  const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-  const bend = dist * 0.2;
-  return { x, y: (sy + ty) / 2 + (dx / dist) * bend - 6 };
+  // Label on the horizontal segment of the elbow
+  const baseY = sy + (ty - sy) * 0.4;
+  const offset = (sx - (sx + tx) / 2) * 0.08;
+  return { x: (sx + tx) / 2, y: baseY + offset - 8 };
 }
 
 // ══════════════════════════════════════════════════════════
@@ -337,7 +427,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
   const [searchValue, setSearchValue] = useState('');
   const [selectedPerson, setSelectedPerson] = useState<SelectedPersonInfo | null>(null);
   const [visibleCategories, setVisibleCategories] = useState<Set<RelCategory>>(
-    new Set(['parent_child', 'spouse', 'sibling'])
+    new Set(['parent_child', 'spouse'])
   );
   const [showExportMenu, setShowExportMenu] = useState(false);
 
@@ -394,6 +484,8 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     const nodes = people.map(p => ({ ...p }));
     const allLinks = buildLinks(relationships);
     const visibleLinks = allLinks.filter(l => visibleCategories.has(l.category));
+    // Family units for compound parent-child connector rendering
+    const familyUnits = visibleCategories.has('parent_child') ? buildFamilyUnits(relationships) : [];
     const generations = assignGenerations(people, relationships);
     const spousePairs = getSpousePairs(relationships);
     const maxGen = Math.max(...Object.values(generations), 0);
@@ -418,17 +510,17 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     zoomRef.current = zoom;
     svg.call(zoom as any);
 
-    // ── Links ──
+    // ── Links (non-parent-child only — parent-child rendered as family connectors) ──
+    const nonPcLinks = visibleLinks.filter(l => l.category !== 'parent_child');
     const linkGroup = g.append('g').attr('class', 'links');
     const link = linkGroup.selectAll('path.link-line')
-      .data(visibleLinks).enter().append('path')
+      .data(nonPcLinks).enter().append('path')
       .attr('class', 'link-line')
       .attr('fill', 'none')
       .attr('stroke', d => getCategoryForType(d.type)?.color ?? '#a3a3a3')
-      .attr('stroke-width', d => d.category === 'parent_child' || d.category === 'spouse' ? 2.5 : 1.8)
+      .attr('stroke-width', d => d.category === 'spouse' ? 2.5 : 1.8)
       .attr('stroke-dasharray', d => getCategoryForType(d.type)?.dash ?? '')
       .attr('opacity', 0.55)
-      .attr('marker-end', d => d.category === 'parent_child' ? 'url(#arrow-pc)' : '')
       .style('cursor', 'pointer')
       .on('contextmenu', (event, d: any) => {
         event.preventDefault();
@@ -440,13 +532,64 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
         if (rel) setContextMenu({ visible: true, x: event.clientX, y: event.clientY, relationship: rel });
       });
 
+    // Labels only for non-parent-child links (parent-child is obvious from hierarchy)
     const linkLabels = linkGroup.selectAll('text.link-label')
-      .data(visibleLinks).enter().append('text')
+      .data(nonPcLinks.filter(l => l.category === 'spouse')).enter().append('text')
       .attr('class', 'link-label')
       .attr('font-size', '10px').attr('font-weight', '500')
       .attr('fill', d => getCategoryForType(d.type)?.color ?? '#666')
       .attr('text-anchor', 'middle').attr('dy', -6).attr('opacity', 0)
       .text(d => getCategoryForType(d.type)?.label ?? d.type);
+
+    // ── Family connectors: one compound path per couple → children ──
+    const pcColor = REL_CATEGORIES.find(c => c.key === 'parent_child')?.color ?? '#6366f1';
+    const familyConnectorGroup = g.append('g').attr('class', 'family-connectors');
+
+    // Function to compute a family connector compound path from current node positions
+    const computeFamilyPath = (fu: FamilyUnit): string => {
+      const getPos = (id: string) => {
+        const n = nodes.find(nn => nn.id === id) as any;
+        return n ? { x: n.x ?? 0, y: n.y ?? 0 } : { x: 0, y: 0 };
+      };
+      const parentPositions = fu.parents.map(getPos);
+      const childPositions = fu.children.map(getPos);
+      if (parentPositions.length === 0 || childPositions.length === 0) return '';
+
+      // Junction Y: between parents and children
+      const parentMidX = parentPositions.reduce((s, p) => s + p.x, 0) / parentPositions.length;
+      const parentY = parentPositions[0].y;
+      const childY = childPositions[0].y;
+      const junctionY = parentY + (childY - parentY) * 0.4;
+
+      let path = '';
+      // Vertical drop from parent midpoint to junction
+      path += `M${parentMidX},${parentY + 35} L${parentMidX},${junctionY} `;
+
+      // Horizontal bar: always spans from parent midpoint to all children
+      const allXs = [parentMidX, ...childPositions.map(c => c.x)];
+      const minX = Math.min(...allXs);
+      const maxX = Math.max(...allXs);
+      if (minX !== maxX) {
+        path += `M${minX},${junctionY} L${maxX},${junctionY} `;
+      }
+
+      // Vertical drops from junction bar to each child
+      childPositions.forEach(c => {
+        path += `M${c.x},${junctionY} L${c.x},${c.y - 35} `;
+      });
+
+      return path;
+    };
+
+    const familyPaths = familyConnectorGroup.selectAll('path.family-connector')
+      .data(familyUnits).enter().append('path')
+      .attr('class', 'family-connector')
+      .attr('fill', 'none')
+      .attr('stroke', pcColor)
+      .attr('stroke-width', 2.5)
+      .attr('opacity', 0.55)
+      .attr('marker-end', 'url(#arrow-pc)')
+      .attr('d', computeFamilyPath);
 
     linkSelRef.current = link;
     linkLabelSelRef.current = linkLabels;
@@ -469,9 +612,9 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
           // Move this node group
           d3.select(this).attr('transform', `translate(${d.x},${d.y})`);
           if (layoutModeRef.current === 'hierarchical') {
-            // Redraw all links and labels to follow
             link.attr('d', computeLinkPath);
             linkLabels.attr('x', (dd: any) => computeLinkLabelPos(dd).x).attr('y', (dd: any) => computeLinkLabelPos(dd).y);
+            familyPaths.attr('d', computeFamilyPath);
           }
         })
         .on('end', function (event, d) {
@@ -494,8 +637,19 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
       .attr('stroke', '#fff').attr('stroke-width', 2).attr('opacity', 0.4).attr('pointer-events', 'none');
     node.append('text').attr('text-anchor', 'middle').attr('dy', '0.38em').attr('font-size', '16px').attr('font-weight', '700').attr('fill', 'white').attr('pointer-events', 'none')
       .text(d => d.name.split(' ').map((p: string) => p[0]).join('').toUpperCase().slice(0, 2));
-    node.append('text').attr('class', 'name-label').attr('y', nodeRadius + 16).attr('text-anchor', 'middle').attr('font-size', '12px').attr('font-weight', '600').attr('fill', '#1e293b').attr('pointer-events', 'none').text(d => d.name);
-    node.append('text').attr('y', nodeRadius + 29).attr('text-anchor', 'middle').attr('font-size', '10px').attr('fill', '#94a3b8').attr('pointer-events', 'none')
+    // Name label: split into first name / last name on two lines
+    const nameLabel = node.append('text').attr('class', 'name-label').attr('text-anchor', 'middle').attr('font-size', '11px').attr('font-weight', '600').attr('fill', '#1e293b').attr('pointer-events', 'none');
+    nameLabel.each(function (d: any) {
+      const parts = d.name.trim().split(/\s+/);
+      const el = d3.select(this);
+      if (parts.length === 1) {
+        el.append('tspan').attr('x', 0).attr('dy', nodeRadius + 14).text(parts[0]);
+      } else {
+        el.append('tspan').attr('x', 0).attr('dy', nodeRadius + 14).text(parts.slice(0, -1).join(' '));
+        el.append('tspan').attr('x', 0).attr('dy', 13).text(parts[parts.length - 1]);
+      }
+    });
+    node.append('text').attr('y', nodeRadius + 42).attr('text-anchor', 'middle').attr('font-size', '10px').attr('fill', '#94a3b8').attr('pointer-events', 'none')
       .text(d => { if (!d.birthDate) return ''; const y = new Date(d.birthDate).getFullYear(); if (d.isDeceased && d.deathDate) return `${y} - ${new Date(d.deathDate).getFullYear()}`; return `b. ${y}`; });
 
     nodeSelRef.current = node;
@@ -511,16 +665,8 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
       layoutModeRef.current = 'hierarchical';
 
       // Compute hierarchical positions
-      const hierPos = computeHierarchicalLayout(d.id, people, relationships, width / 2, height / 2);
+      const hierPos = computeHierarchicalLayout(d.id, relationships, width / 2, height / 2);
       const connectedIds = new Set(Object.keys(hierPos));
-
-      // Find connected link indices
-      const connectedLinkIndices = new Set<number>();
-      visibleLinks.forEach((l, i) => {
-        const sid = (l.source as any).id ?? l.source;
-        const tid = (l.target as any).id ?? l.target;
-        if (connectedIds.has(sid) && connectedIds.has(tid)) connectedLinkIndices.add(i);
-      });
 
       const DURATION = 800;
 
@@ -532,23 +678,41 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
             n.x = pos.x; n.y = pos.y; n.fx = pos.x; n.fy = pos.y;
             return `translate(${pos.x},${pos.y})`;
           }
-          // Non-connected: push far away
           n.fx = n.x; n.fy = n.y;
           return `translate(${n.x},${n.y})`;
         });
 
-      // Animate links
+      // Animate non-parent-child links
       link.transition().duration(DURATION).ease(d3.easeCubicInOut)
         .attr('d', computeLinkPath)
-        .attr('opacity', (_l: any, i: number) => connectedLinkIndices.has(i) ? 0.7 : 0.04)
-        .attr('stroke-width', (_l: any, i: number) => connectedLinkIndices.has(i) ? 3 : 0.5);
+        .attr('opacity', (l: any) => {
+          const sid = (l.source as any).id ?? l.source;
+          const tid = (l.target as any).id ?? l.target;
+          return (connectedIds.has(sid) && connectedIds.has(tid)) ? 0.7 : 0.04;
+        })
+        .attr('stroke-width', (l: any) => {
+          const sid = (l.source as any).id ?? l.source;
+          const tid = (l.target as any).id ?? l.target;
+          return (connectedIds.has(sid) && connectedIds.has(tid)) ? 3 : 0.5;
+        });
 
-      // Animate link labels
+      // Animate family connectors
+      familyPaths.transition().duration(DURATION).ease(d3.easeCubicInOut)
+        .attr('d', computeFamilyPath)
+        .attr('opacity', (fu: FamilyUnit) => {
+          const allConnected = [...fu.parents, ...fu.children].every(id => connectedIds.has(id));
+          return allConnected ? 0.7 : 0.04;
+        });
+
+      // Spouse labels
       linkLabels.transition().duration(DURATION).ease(d3.easeCubicInOut)
         .attr('x', (dd: any) => computeLinkLabelPos(dd).x)
         .attr('y', (dd: any) => computeLinkLabelPos(dd).y)
-        .attr('opacity', (_l: any, i: number) => connectedLinkIndices.has(i) ? 1 : 0)
-        .attr('font-size', (_l: any, i: number) => connectedLinkIndices.has(i) ? '11px' : '10px');
+        .attr('opacity', (l: any) => {
+          const sid = (l.source as any).id ?? l.source;
+          const tid = (l.target as any).id ?? l.target;
+          return (connectedIds.has(sid) && connectedIds.has(tid)) ? 1 : 0;
+        });
 
       // Dim/highlight nodes
       node.select('.main-circle').transition().duration(DURATION)
@@ -588,7 +752,8 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
         node.select('.select-ring').attr('stroke', 'transparent');
         link.transition().duration(400)
           .attr('opacity', 0.55)
-          .attr('stroke-width', (dd: any) => dd.category === 'parent_child' || dd.category === 'spouse' ? 2.5 : 1.8);
+          .attr('stroke-width', (dd: any) => dd.category === 'spouse' ? 2.5 : 1.8);
+        familyPaths.transition().duration(400).attr('opacity', 0.55).attr('stroke-width', 2.5);
         linkLabels.transition().duration(400).attr('opacity', 0);
 
         // Restart simulation
@@ -616,6 +781,11 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
         const tid = (l.target as any).id ?? l.target;
         return (sid === d.id || tid === d.id) ? 0.9 : 0.1;
       });
+      // Highlight family connectors involving this person
+      familyPaths.attr('opacity', (fu: FamilyUnit) => {
+        return fu.parents.includes(d.id) || fu.children.includes(d.id) ? 0.9 : 0.1;
+      });
+      // Show spouse labels on hover
       linkLabels.attr('opacity', (l: any) => {
         const sid = (l.source as any).id ?? l.source;
         const tid = (l.target as any).id ?? l.target;
@@ -626,22 +796,40 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
       if (layoutModeRef.current === 'hierarchical') return;
       node.select('.main-circle').attr('opacity', 1);
       link.attr('opacity', 0.55);
+      familyPaths.attr('opacity', 0.55);
       linkLabels.attr('opacity', 0);
     });
 
     // ── Force simulation ──
+    // Group nodes by generation to assign spread-out X targets
+    const genMembers = new Map<number, string[]>();
+    Object.entries(generations).forEach(([id, gen]) => {
+      if (!genMembers.has(gen)) genMembers.set(gen, []);
+      genMembers.get(gen)!.push(id);
+    });
+
     const simulation = d3.forceSimulation(nodes as any)
-      .force('link', d3.forceLink(visibleLinks as any).id((d: any) => d.id).distance(200).strength(0.5))
-      .force('charge', d3.forceManyBody().strength(-500))
-      .force('center', d3.forceCenter(width / 2, height / 2).strength(0.02))
-      .force('collide', d3.forceCollide(nodeRadius + 40))
-      .force('y', d3.forceY((d: any) => (generations[d.id] ?? 0) * genSpacing + genSpacing).strength(0.9))
+      .force('link', d3.forceLink(visibleLinks as any).id((d: any) => d.id).distance(280).strength(0.3))
+      .force('charge', d3.forceManyBody().strength(-1200))
+      .force('collide', d3.forceCollide(nodeRadius + 70))
+      .force('y', d3.forceY((d: any) => (generations[d.id] ?? 0) * genSpacing + genSpacing).strength(0.95))
       .force('x', d3.forceX((d: any) => {
+        // Spouses attract to each other
         const sp = spousePairs.get(d.id);
-        if (sp) { const sn = nodes.find(n => n.id === sp); if (sn && (sn as any).x) return (sn as any).x; }
-        return width / 2;
-      }).strength(0.05))
-      .alpha(0.8).alphaDecay(0.025);
+        if (sp) {
+          const sn = nodes.find(n => n.id === sp);
+          if (sn && (sn as any).x) return (sn as any).x;
+        }
+        // Spread nodes across the width based on their position in their generation
+        const gen = generations[d.id] ?? 0;
+        const members = genMembers.get(gen) ?? [d.id];
+        const idx = members.indexOf(d.id);
+        const count = members.length;
+        if (count <= 1) return width / 2;
+        const spacing = Math.min(300, (width - 200) / count);
+        return (width / 2) - ((count - 1) * spacing / 2) + idx * spacing;
+      }).strength(0.12))
+      .alpha(0.8).alphaDecay(0.02);
 
     simulationRef.current = simulation;
 
@@ -649,13 +837,15 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
       if (layoutModeRef.current !== 'force') return;
       link.attr('d', computeLinkPath);
       linkLabels.attr('x', (d: any) => computeLinkLabelPos(d).x).attr('y', (d: any) => computeLinkLabelPos(d).y);
+      familyPaths.attr('d', computeFamilyPath);
       node.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
     });
 
     simulation.on('end', () => { if (layoutModeRef.current === 'force') fitToView(); });
 
     return () => { simulation.stop(); };
-  }, [people, relationships, width, height, visibleCategories, getPersonRelationships]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [people, relationships, width, height, visibleCategories]);
 
   // ── Controls ──
   const handleZoom = useCallback((f: number) => {
@@ -671,7 +861,7 @@ export const D3NetworkGraph: React.FC<D3NetworkGraphProps> = ({
     const bounds = gRef.current.getBBox();
     if (bounds.width === 0 || bounds.height === 0) return;
     const pad = 80;
-    const scale = Math.min((width - pad * 2) / bounds.width, (height - pad * 2) / bounds.height, 1.0);
+    const scale = Math.min((width - pad * 2) / bounds.width, (height - pad * 2) / bounds.height, 2.0);
     const tx = width / 2 - scale * (bounds.x + bounds.width / 2);
     const ty = height / 2 - scale * (bounds.y + bounds.height / 2);
     d3.select(svgRef.current).transition().duration(500).call(zoomRef.current.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { PersonForm } from '@/components/PersonForm';
 import { RelationshipManager } from '@/components/RelationshipManager';
 import { DataUpload } from '@/components/DataUpload';
-import { DuplicateManager } from '@/components/DuplicateManager';
+
 import { ReviewQueue } from '@/components/ReviewQueue';
 import { D3NetworkGraph } from '@/components/D3NetworkGraph';
 import { Person, Relationship, RelationshipType } from '@/types/family';
@@ -80,34 +80,62 @@ const Index = () => {
     toast({ title: 'Relationship Removed', description: 'The relationship has been deleted.' });
   };
 
-  const handleImportPeople = (importedPeople: Person[]) => {
-    if (!useCloud) {
+  // Track ID mapping from imported IDs to Supabase IDs
+  const importIdMapRef = React.useRef<Record<string, string>>({});
+
+  const handleImportPeople = async (importedPeople: Person[]) => {
+    if (useCloud) {
+      const idMap: Record<string, string> = {};
+      let added = 0;
+      for (const p of importedPeople) {
+        const { id: oldId, ...rest } = p;
+        const newId = await supabaseData.addPerson(rest);
+        if (newId) {
+          idMap[oldId] = newId;
+          added++;
+        }
+      }
+      importIdMapRef.current = idMap;
+      toast({ title: 'People Imported', description: `${added} people added to database.` });
+    } else {
       localTree.setPeople([...people, ...importedPeople]);
       toast({ title: 'People Imported', description: `${importedPeople.length} people added.` });
     }
   };
 
-  const handleImportRelationships = (importedRels: Relationship[]) => {
-    if (!useCloud) {
+  const handleImportRelationships = async (importedRels: Relationship[]) => {
+    if (useCloud) {
+      const idMap = importIdMapRef.current;
+      let added = 0;
+      for (const r of importedRels) {
+        const personId = idMap[r.personId] || r.personId;
+        const relatedPersonId = idMap[r.relatedPersonId] || r.relatedPersonId;
+        await addRelationship(personId, relatedPersonId, r.relationshipType);
+        added++;
+      }
+      toast({ title: 'Relationships Imported', description: `${added} relationships added.` });
+    } else {
       importedRels.forEach(r => localTree.addRelationship(r.personId, r.relatedPersonId, r.relationshipType));
       setTimeout(() => localTree.inferRelationships(), 100);
       toast({ title: 'Relationships Imported', description: `${importedRels.length} relationships added. Inferring more...` });
     }
   };
 
-  const handleMergePeople = (keepId: string, deleteId: string) => {
-    if (!useCloud) {
-      const keepPerson = people.find(p => p.id === keepId);
-      const deletePerson = people.find(p => p.id === deleteId);
-      localTree.mergePeople(keepId, deleteId);
-      toast({ title: 'Merged', description: `"${deletePerson?.name}" merged into "${keepPerson?.name}". Relationships transferred.` });
-    }
-  };
+
 
   const handleDeletePerson = async (personId: string) => {
     const person = people.find(p => p.id === personId);
     await deletePerson(personId);
     toast({ title: 'Deleted', description: `${person?.name} removed.` });
+  };
+
+  const handleClearAll = async () => {
+    if (useCloud) {
+      await supabaseData.clearAll();
+    } else {
+      localStorage.clear();
+      window.location.reload();
+    }
   };
 
   const handleInferRelationships = () => {
@@ -285,7 +313,14 @@ const Index = () => {
                               {person.birthDate && `b. ${new Date(person.birthDate).getFullYear()}`}
                               {person.birthPlace && ` · ${person.birthPlace}`}
                             </div>
-                            <Button variant="ghost" size="sm" onClick={() => handleNodeEdit(person.id)}>Edit</Button>
+                            <div className="flex gap-1">
+                              <Button variant="ghost" size="sm" onClick={() => handleNodeEdit(person.id)}>Edit</Button>
+                              <Button variant="ghost" size="sm" className="text-red-500 hover:text-red-700 hover:bg-red-50" onClick={() => {
+                                if (window.confirm(`Delete ${person.name}? This will also remove all their relationships.`)) {
+                                  handleDeletePerson(person.id);
+                                }
+                              }}>Delete</Button>
+                            </div>
                           </div>
                         </CardContent>
                       </Card>
@@ -315,15 +350,8 @@ const Index = () => {
               onImportPeople={handleImportPeople}
               onImportRelationships={handleImportRelationships}
               onExportData={() => {}}
+              onClearAll={handleClearAll}
             />
-            {people.length > 0 && (
-              <DuplicateManager
-                people={people}
-                relationships={relationships}
-                onMerge={handleMergePeople}
-                onDelete={handleDeletePerson}
-              />
-            )}
           </TabsContent>
 
           {/* Review Queue (Admin only) */}
